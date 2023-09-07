@@ -203,24 +203,26 @@ def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count
     snapshots = [snapshot_name for snapshot_name in snapshots if "SnapBeforeWatchTower-Date" in snapshot_name]
 
     # Extract the snapshot date from the snapshot name and sort by date (most recent first)
-    snapshots.sort(key=lambda x: extract_snapshot_date(x.split('-Date')[-1]), reverse=True)
+    snapshots.sort(key=lambda x: extract_snapshot_date(x.split('-date')[-1]), reverse=True)
 
     # Determine snapshots to delete and to retain
     older_than_snapshots = [snapshot_name for snapshot_name in snapshots if is_older_than(snapshot_name.split('-Date')[-1], older_than)]
-    
-    to_delete = [snapshot_name for snapshot_name in older_than_snapshots if older_than_snapshots.index(snapshot_name) >= retain_count]
+    to_delete = snapshots[retain_count:] if len(older_than_snapshots) >= retain_count else []
 
     if to_delete:
         print_separator(logger)
         logger.info(f"Cleaning up snapshots in: {dataset}")
-        for snapshot_name in to_delete:
-            logger.info(f"Full name being deleted: {snapshot_name}")
-            try:
-                subprocess.run(["zfs", "destroy", snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
-            except subprocess.CalledProcessError as e:
-                print_separator(logger, error_logger)
-                error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
-                raise e
+        if len(snapshots) > retain_count:  # Check if there are more snapshots than the retain_count
+            for snapshot_name in to_delete:
+                logger.info(f"Full name being deleted: {snapshot_name}")
+                try:
+                    subprocess.run(["zfs", "destroy", snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
+                except subprocess.CalledProcessError as e:
+                    print_separator(logger, error_logger)
+                    error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
+                    raise e
+        else:
+            logger.info(f"Retaining all snapshots as the number of snapshots ({len(snapshots)}) is less than the retain count ({retain_count}).")
             
 def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
     log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")

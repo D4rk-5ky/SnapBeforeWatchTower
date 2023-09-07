@@ -31,7 +31,7 @@ class CustomLogger(logging.Logger):
         
 def setup_logger(log_folder, log_date):
     global err_filepath  # Use the global variable
-    log_filename = f"SnapBeforeWatchTower-date{log_date}.log"
+    log_filename = f"SnapBeforeWatchTower-Date{log_date}.log"
     log_filepath = os.path.join(log_folder, log_filename)
 
     # Set up logger for normal output
@@ -41,7 +41,7 @@ def setup_logger(log_folder, log_date):
     logger.setLevel(logging.DEBUG)
 
     # Set up logger for errors
-    err_filename = f"SnapBeforeWatchTower-date{log_date}.err"
+    err_filename = f"SnapBeforeWatchTower-Date{log_date}.err"
     err_filepath = os.path.join(log_folder, err_filename)
     error_logger = CustomLogger("SnapBeforeWatchTowerError", err_filepath)
 
@@ -259,7 +259,7 @@ def print_separator(logger, error_logger=None):
 def save_docker_image_digests():
     log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
     os.makedirs(log_folder, exist_ok=True)
-    filename = f"SnapBeforeWatchTower-date{datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')}.digest"
+    filename = f"SnapBeforeWatchTower-Date{datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')}.digest"
     filepath = os.path.join(log_folder, filename)
     with open(filepath, "w") as file:
         subprocess.run(["docker", "images", "--digests"], stdout=file)

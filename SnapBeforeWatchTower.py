@@ -149,7 +149,7 @@ def parse_older_than(value):
     match = re.match(pattern, value)
     if not match:
         raise argparse.ArgumentTypeError("Invalid value for --older-than. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
-    
+
     num = int(match.group(1))
     unit = match.group(2)
 
@@ -158,7 +158,7 @@ def parse_older_than(value):
     elif unit == 'w':
         return datetime.timedelta(weeks=num)
     elif unit == 'm':
-        return datetime.timedelta(days=30*num)  # Assuming 30 days per month for simplicity
+        return datetime.timedelta(days=num * 30)  # Calculate based on 30 days per month
     else:
         raise argparse.ArgumentTypeError("Invalid value for --older-than. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
 
@@ -181,13 +181,9 @@ def extract_snapshot_date(snapshot_name):
     date_str = snapshot_name.split('Date', 1)[-1]
     return datetime.datetime.strptime(date_str, "%Y-%m-%d_%H_%M_%S")
 
-def is_older_than(snapshot_date_str, older_than):
-    snapshot_date = datetime.datetime.strptime(snapshot_date_str, "%Y-%m-%d_%H_%M_%S")
+def is_older_than(snapshot_date, older_than):
     today = datetime.datetime.today()
-    cutoff_date = today - older_than
-    #print(f"Snapshot Date: {snapshot_date}")
-    #print(f"Cutoff Date: {cutoff_date}")
-    return snapshot_date < cutoff_date
+    return today - snapshot_date > older_than
    
 def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count):
     try:
@@ -205,22 +201,53 @@ def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count
     # Extract the snapshot date from the snapshot name and sort by date (most recent first)
     snapshots.sort(key=lambda x: extract_snapshot_date(x.split('-Date')[-1]), reverse=True)
 
-    # Determine snapshots to delete and to retain
-    older_than_snapshots = [snapshot_name for snapshot_name in snapshots if is_older_than(snapshot_name.split('-Date')[-1], older_than)]
-    
-    to_delete = [snapshot_name for snapshot_name in older_than_snapshots if older_than_snapshots.index(snapshot_name) >= retain_count]
+    older_than_snapshots = []
 
-    if to_delete:
-        print_separator(logger)
-        logger.info(f"Cleaning up snapshots in: {dataset}")
-        for snapshot_name in to_delete:
-            logger.info(f"Full name being deleted: {snapshot_name}")
-            try:
-                subprocess.run(["zfs", "destroy", snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
-            except subprocess.CalledProcessError as e:
-                print_separator(logger, error_logger)
-                error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
-                raise e
+    cutoff_date = datetime.datetime.today() - older_than
+
+    # Calculate the number of snapshots that are not older than the specified duration
+    num_snapshots_not_older = sum(1 for snapshot_name in snapshots if not is_older_than(extract_snapshot_date(snapshot_name.split('-Date')[-1]), older_than))
+
+    if num_snapshots_not_older >= retain_count:
+        # Add everything that is older_than to older_than_snapshots
+        for snapshot_name in snapshots:
+            snapshot_date = extract_snapshot_date(snapshot_name.split('-Date')[-1])
+            is_older = snapshot_date < cutoff_date
+
+            if is_older:
+                older_than_snapshots.append(snapshot_name)
+    else:
+        count_not_older = 0
+        for snapshot_name in snapshots:
+            snapshot_date = extract_snapshot_date(snapshot_name.split('-Date')[-1])
+            is_older = snapshot_date < cutoff_date
+
+            if not is_older and count_not_older < retain_count:
+                count_not_older += 1
+            elif is_older:
+                older_than_snapshots.append(snapshot_name)
+
+            if count_not_older + len(older_than_snapshots) >= retain_count:
+                break
+
+
+    to_delete = older_than_snapshots
+
+    print_separator(logger)
+
+    logger.info(f"Snapshot Date: {to_delete}")
+
+    #if to_delete:
+    #    print_separator(logger)
+    #    logger.info(f"Cleaning up snapshots in: {dataset}")
+    #    for snapshot_name in to_delete:
+    #        logger.info(f"Full name being deleted: {snapshot_name}")
+    #        try:
+    #            subprocess.run(["zfs", "destroy", snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
+    #        except subprocess.CalledProcessError as e:
+    #            print_separator(logger, error_logger)
+    #            error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
+    #            raise e
             
 def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
     log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")

@@ -253,26 +253,40 @@ def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
     log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
     filenames = ["*.log", "*.err", "*.digest"]
     print_separator(logger)
-    logger.info("Cleaning up in old redundant logs")
+    logger.info("Cleaning up old redundant logs and files")
     print_separator(logger)
+
+    # Initialize lists to store files for deletion and retention
+    files_to_delete = []
+    files_older_than = []
+    files_to_retain = 0
+
     for filename_pattern in filenames:
         files = glob.glob(os.path.join(log_folder, filename_pattern))
         for file in files:
-            # Use a case-insensitive regular expression to extract the date string from the filename
             date_match = re.search(r'(?i)-Date(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})', file)
             if date_match:
                 snapshot_date_str = date_match.group(1)
-                snapshot_date = datetime.datetime.strptime(snapshot_date_str, "%Y-%m-%d_%H_%M_%S")
-                age = datetime.datetime.today() - snapshot_date
-                if age > older_than and len(files) > retain_count:
-                    try:
-                        os.remove(file)
-                        logger.info(f"Deleted file: {file}")
-                    except Exception as e:
-                        print_separator()
-                        error_msg = f"Error deleting file: {file}, {str(e)}"
-                        logger.error(error_msg)
-                        error_logger.error(error_msg)
+                
+                if is_older_than(snapshot_date_str, older_than):
+                    files_older_than.append(file)
+                else:
+                    files_to_retain += 1
+
+    # Decide which files to delete to retain at least retain_count
+    if files_to_retain > retain_count:
+        files_to_delete.extend(files_older_than[:files_to_retain - retain_count])
+
+    # Perform file deletion
+    for file in files_to_delete:
+        try:
+            os.remove(file)
+            logger.info(f"Deleted file: {file}")
+        except Exception as e:
+            print_separator()
+            error_msg = f"Error deleting file: {file}, {str(e)}"
+            logger.error(error_msg)
+            error_logger.error(error_msg)
 
 def print_separator(logger, error_logger=None):
     separator_length = 20

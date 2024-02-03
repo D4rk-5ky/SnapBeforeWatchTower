@@ -201,53 +201,33 @@ def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count
     # Extract the snapshot date from the snapshot name and sort by date (most recent first)
     snapshots.sort(key=lambda x: extract_snapshot_date(x.split('-Date')[-1]), reverse=True)
 
-    older_than_snapshots = []
+    to_delete = []
 
-    cutoff_date = datetime.datetime.today() - older_than
+    # Count snapshots until retain_count is reached
+    count_newest = 0
+    for snapshot_name in snapshots:
+        snapshot_date = extract_snapshot_date(snapshot_name.split('-Date')[-1])
 
-    # Calculate the number of snapshots that are not older than the specified duration
-    num_snapshots_not_older = sum(1 for snapshot_name in snapshots if not is_older_than(extract_snapshot_date(snapshot_name.split('-Date')[-1]), older_than))
-
-    if num_snapshots_not_older >= retain_count:
-        # Add everything that is older_than to older_than_snapshots
-        for snapshot_name in snapshots:
-            snapshot_date = extract_snapshot_date(snapshot_name.split('-Date')[-1])
-            is_older = snapshot_date < cutoff_date
-
-            if is_older:
-                older_than_snapshots.append(snapshot_name)
-    else:
-        count_not_older = 0
-        for snapshot_name in snapshots:
-            snapshot_date = extract_snapshot_date(snapshot_name.split('-Date')[-1])
-            is_older = snapshot_date < cutoff_date
-
-            if not is_older and count_not_older < retain_count:
-                count_not_older += 1
-            elif is_older:
-                older_than_snapshots.append(snapshot_name)
-
-            if count_not_older + len(older_than_snapshots) >= retain_count:
-                break
-
-
-    to_delete = older_than_snapshots
+        if count_newest < retain_count:
+            count_newest += 1
+        elif is_older_than(snapshot_date, older_than):
+            to_delete.append(snapshot_name)
 
     print_separator(logger)
 
     logger.info(f"Snapshot Date: {to_delete}")
 
-    #if to_delete:
-    #    print_separator(logger)
-    #    logger.info(f"Cleaning up snapshots in: {dataset}")
-    #    for snapshot_name in to_delete:
-    #        logger.info(f"Full name being deleted: {snapshot_name}")
-    #        try:
-    #            subprocess.run(["zfs", "destroy", snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
-    #        except subprocess.CalledProcessError as e:
-    #            print_separator(logger, error_logger)
-    #            error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
-    #            raise e
+    if to_delete:
+        print_separator(logger)
+        logger.info(f"Cleaning up snapshots in: {dataset}")
+        for snapshot_name in to_delete:
+            logger.info(f"Full name being deleted: {snapshot_name}")
+            try:
+                subprocess.run(["zfs", "destroy", snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
+            except subprocess.CalledProcessError as e:
+                print_separator(logger, error_logger)
+                error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
+                raise e
             
 def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
     log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
@@ -267,8 +247,10 @@ def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
             date_match = re.search(r'(?i)-Date(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})', file)
             if date_match:
                 snapshot_date_str = date_match.group(1)
-                
-                if is_older_than(snapshot_date_str, older_than):
+                snapshot_date = datetime.datetime.strptime(snapshot_date_str, "%Y-%m-%d_%H_%M_%S")
+
+                # Use the older_than duration directly in the comparison
+                if snapshot_date < (datetime.datetime.today() - older_than):
                     files_older_than.append(file)
                 else:
                     files_to_retain += 1

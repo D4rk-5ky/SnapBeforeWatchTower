@@ -258,6 +258,16 @@ def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
     # Decide which files to delete to retain at least retain_count
     if files_to_retain > retain_count:
         files_to_delete.extend(files_older_than[:files_to_retain - retain_count])
+    elif files_to_retain == retain_count:
+        # If files_to_retain is equal to retain_count, no deletion is required
+        pass
+    else:
+        # If files_to_retain is less than retain_count, delete all files older than specified duration
+        files_to_delete.extend(files_older_than)
+
+    # Print files being retained and deleted
+    print("Files to Retain:", files_to_retain)
+    print("Files to Delete:", files_to_delete)
 
     # Perform file deletion
     for file in files_to_delete:
@@ -269,6 +279,7 @@ def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
             error_msg = f"Error deleting file: {file}, {str(e)}"
             logger.error(error_msg)
             error_logger.error(error_msg)
+
 
 def print_separator(logger, error_logger=None):
     separator_length = 20

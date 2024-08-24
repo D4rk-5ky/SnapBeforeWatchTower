@@ -31,7 +31,7 @@ class CustomLogger(logging.Logger):
         
 def setup_logger(log_folder, log_date):
     global err_filepath  # Use the global variable
-    log_filename = f"SnapBeforeWatchTower-Date{log_date}.log"
+    log_filename = f"SnapBeforeWatchTower-Date-{log_date}.log"
     log_filepath = os.path.join(log_folder, log_filename)
 
     # Set up logger for normal output
@@ -41,7 +41,7 @@ def setup_logger(log_folder, log_date):
     logger.setLevel(logging.DEBUG)
 
     # Set up logger for errors
-    err_filename = f"SnapBeforeWatchTower-Date{log_date}.err"
+    err_filename = f"SnapBeforeWatchTower-Date-{log_date}.err"
     err_filepath = os.path.join(log_folder, err_filename)
     error_logger = CustomLogger("SnapBeforeWatchTowerError", err_filepath)
 
@@ -164,7 +164,7 @@ def parse_older_than(value):
 
 def create_snapshot(logger, error_logger, dataset):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
-    snapshot_name = f"SnapBeforeWatchTower-Date{timestamp}"
+    snapshot_name = f"SnapBeforeWatchTower-Date-{timestamp}"
     full_snapshot_name = f"{dataset}@{snapshot_name}"
     logger.info(f"Creating snapshot of: {dataset}")
     logger.debug(f"Full snapshot name: {full_snapshot_name}")
@@ -195,6 +195,7 @@ def is_older_than(snapshot_date_str, older_than):
 
    
 def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count):
+    global retained_snapshot_dates
     try:
         snapshots = subprocess.check_output(
             ["zfs", "list", "-H", "-t", "snapshot", "-o", "name", dataset],
@@ -204,15 +205,20 @@ def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count
         error_logger.error(f"Error listing snapshots for {dataset}. Command output: {e.stderr.strip()}")
         return
 
-    # Filter snapshots based on the presence of the expected date string
-    snapshots = [snapshot for snapshot in snapshots if "SnapBeforeWatchTower-Date" in snapshot]
+    retained_snapshot_dates.clear()
 
-    # Categorize snapshots into newer and older
+    # Updated regex to match both naming conventions
+    snap_regex = re.compile(r"SnapBeforeWatchTower-Date-?(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})")
+
+    # Filter snapshots based on the regex
+    snapshots = [snapshot for snapshot in snapshots if snap_regex.search(snapshot)]
+
+    # Categorize snapshots into newer and older using the flexible date extraction
     try:
         newer_snapshots = [snapshot for snapshot in snapshots
-                           if not is_older_than(snapshot.split('@')[-1].split('-Date')[-1], older_than)]
+                           if not is_older_than(snap_regex.search(snapshot).group(1), older_than)]
         older_snapshots = [snapshot for snapshot in snapshots
-                           if is_older_than(snapshot.split('@')[-1].split('-Date')[-1], older_than)]
+                           if is_older_than(snap_regex.search(snapshot).group(1), older_than)]
     except Exception as e:
         error_logger.error(f"Error processing snapshot dates: {str(e)}")
         return
@@ -222,72 +228,67 @@ def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count
     else:
         total_snapshots = len(newer_snapshots) + len(older_snapshots)
         if total_snapshots <= retain_count:
+            retained_snapshot_dates += [snap_regex.search(s).group(1) for s in newer_snapshots + older_snapshots]
             return
         retain_older_count = retain_count - len(newer_snapshots)
         to_delete = older_snapshots[retain_older_count:]
+        retained_snapshot_dates += [snap_regex.search(s).group(1) for s in newer_snapshots + older_snapshots[retain_older_count:]]
 
-    if to_delete:
-        logger.info(f"Cleaning up {len(to_delete)} older snapshots for dataset {dataset}.")
-        for snapshot_name in to_delete:
-            try:
-                subprocess.run(["zfs", "destroy", snapshot_name], check=True)
-                logger.info(f"Deleted snapshot: {snapshot_name}")
-            except subprocess.CalledProcessError as e:
-                error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
-
-
-            
-def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
-    log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    filenames = ["*.log", "*.err", "*.digest"]
-    print_separator(logger)
-    logger.info("Cleaning up old redundant logs and files")
-    print_separator(logger)
-
-    # Initialize lists to store files for deletion and retention
-    files_to_delete = []
-    files_older_than = []
-    files_to_retain = 0
-
-    for filename_pattern in filenames:
-        files = glob.glob(os.path.join(log_folder, filename_pattern))
-        for file in files:
-            date_match = re.search(r'(?i)-Date(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})', file)
-            if date_match:
-                snapshot_date_str = date_match.group(1)
-                snapshot_date = datetime.datetime.strptime(snapshot_date_str, "%Y-%m-%d_%H_%M_%S")
-
-                # Use the older_than duration directly in the comparison
-                if snapshot_date < (datetime.datetime.today() - older_than):
-                    files_older_than.append(file)
-                else:
-                    files_to_retain += 1
-
-    # Decide which files to delete to retain at least retain_count
-    if files_to_retain > retain_count:
-        files_to_delete.extend(files_older_than[:files_to_retain - retain_count])
-    elif files_to_retain == retain_count:
-        # If files_to_retain is equal to retain_count, no deletion is required
-        pass
-    else:
-        # If files_to_retain is less than retain_count, delete all files older than specified duration
-        files_to_delete.extend(files_older_than)
-
-    # Print files being retained and deleted
-    print("Files to Retain:", files_to_retain)
-    print("Files to Delete:", files_to_delete)
-
-    # Perform file deletion
-    for file in files_to_delete:
+    for snapshot_name in to_delete:
         try:
-            os.remove(file)
-            logger.info(f"Deleted file: {file}")
-        except Exception as e:
-            print_separator()
-            error_msg = f"Error deleting file: {file}, {str(e)}"
-            logger.error(error_msg)
-            error_logger.error(error_msg)
+            subprocess.run(["zfs", "destroy", snapshot_name], check=True)
+            logger.info(f"Deleted snapshot: {snapshot_name}")
+        except subprocess.CalledProcessError as e:
+            error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
 
+    # Update the global list with dates of snapshots that were not deleted
+    retained_snapshot_dates += [snap_regex.search(s).group(1) for s in snapshots if s not in to_delete]
+
+
+
+
+def get_log_folder():
+    # This function returns the path to the logs directory located in the same directory as the script.
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # Get the directory where the script is located.
+    log_folder = os.path.join(script_dir, "logs")  # Path to the logs directory.
+    return log_folder
+
+def group_files_by_date(log_folder, date_pattern):
+    files_by_date = {}
+    for filename in os.listdir(log_folder):
+        match = date_pattern.search(filename)
+        if match:
+            date_key = match.group(1)
+            if date_key not in files_by_date:
+                files_by_date[date_key] = []
+            files_by_date[date_key].append(filename)
+    return files_by_date
+
+# Global list to keep dates of retained snapshots
+retained_snapshot_dates = []
+
+def delete_old_files(logger, error_logger, log_folder, older_than, retain_count):
+    global retained_snapshot_dates
+    date_pattern = re.compile(r"SnapBeforeWatchTower[-_][Dd]ate[-_]?(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})\.(log|err|digest)")
+
+    files_by_date = {}
+    for filename in os.listdir(log_folder):
+        match = date_pattern.search(filename)
+        if match and match.group(1) not in retained_snapshot_dates:
+            date_key = match.group(1)
+            if date_key not in files_by_date:
+                files_by_date[date_key] = []
+            files_by_date[date_key].append(filename)
+
+    # Deletion logic as before, now files_by_date only contains deletable files
+    for date, files in files_by_date.items():
+        for filename in files:
+            path_to_file = os.path.join(log_folder, filename)
+            try:
+                os.remove(path_to_file)
+                logger.info(f"Deleted file: {filename}")
+            except Exception as e:
+                error_logger.error(f"Failed to delete file: {filename}. Error: {str(e)}")
 
 def print_separator(logger, error_logger=None):
     separator_length = 20
@@ -301,7 +302,7 @@ def print_separator(logger, error_logger=None):
 def save_docker_image_digests():
     log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
     os.makedirs(log_folder, exist_ok=True)
-    filename = f"SnapBeforeWatchTower-Date{datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')}.digest"
+    filename = f"SnapBeforeWatchTower-Date-{datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')}.digest"
     filepath = os.path.join(log_folder, filename)
     with open(filepath, "w") as file:
         subprocess.run(["docker", "images", "--digests"], stdout=file)
@@ -338,7 +339,7 @@ def main():
                 delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count)
             print_separator(logger)
             logger.info("Snapshot creation completed.")
-            #delete_old_files(logger, error_logger, dataset, args.older_than, args.retain_count)
+            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count)
 
         elif args.command == 'delete':
             print_separator(logger)
@@ -347,7 +348,7 @@ def main():
                 delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count)
             print_separator(logger)
             logger.info("Snapshot deletion completed.")
-            #delete_old_files(logger, error_logger, dataset, args.older_than, args.retain_count)
+            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count)
 
     except Exception as e:
         print_separator(logger, error_logger)

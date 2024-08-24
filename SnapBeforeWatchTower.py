@@ -181,53 +181,61 @@ def extract_snapshot_date(snapshot_name):
     date_str = snapshot_name.split('Date', 1)[-1]
     return datetime.datetime.strptime(date_str, "%Y-%m-%d_%H_%M_%S")
 
-def is_older_than(snapshot_date, older_than):
-    today = datetime.datetime.today()
-    return today - snapshot_date > older_than
+def is_older_than(snapshot_date_str, older_than):
+    try:
+        # Convert the snapshot date string to a datetime object
+        snapshot_date = datetime.datetime.strptime(snapshot_date_str, "%Y-%m-%d_%H_%M_%S")
+        today = datetime.datetime.today()
+        age = today - snapshot_date
+        return age > older_than
+    except ValueError as e:
+        # Log error in case of date string formatting issues
+        logger.error(f"Date conversion error in is_older_than: {str(e)}")
+        return False  # In case of error, assume not older to prevent accidental deletion
+
    
 def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count):
     try:
-        snapshots = subprocess.check_output(["zfs", "list", "-H", "-t", "snapshot", "-o", "name", dataset], stderr=subprocess.PIPE).decode().strip().split("\n")
+        snapshots = subprocess.check_output(
+            ["zfs", "list", "-H", "-t", "snapshot", "-o", "name", dataset],
+            stderr=subprocess.PIPE
+        ).decode().strip().split("\n")
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.strip()
-        print_separator(logger, error_logger)
-        error_logger.error(f"Error listing snapshots for {dataset}. Command output: {error_msg}")
-        snapshots = []
-        raise e
+        error_logger.error(f"Error listing snapshots for {dataset}. Command output: {e.stderr.strip()}")
+        return
 
-    # Filter snapshots by name to include only relevant ones
-    snapshots = [snapshot_name for snapshot_name in snapshots if "SnapBeforeWatchTower-Date" in snapshot_name]
+    # Filter snapshots based on the presence of the expected date string
+    snapshots = [snapshot for snapshot in snapshots if "SnapBeforeWatchTower-Date" in snapshot]
 
-    # Extract the snapshot date from the snapshot name and sort by date (most recent first)
-    snapshots.sort(key=lambda x: extract_snapshot_date(x.split('-Date')[-1]), reverse=True)
+    # Categorize snapshots into newer and older
+    try:
+        newer_snapshots = [snapshot for snapshot in snapshots
+                           if not is_older_than(snapshot.split('@')[-1].split('-Date')[-1], older_than)]
+        older_snapshots = [snapshot for snapshot in snapshots
+                           if is_older_than(snapshot.split('@')[-1].split('-Date')[-1], older_than)]
+    except Exception as e:
+        error_logger.error(f"Error processing snapshot dates: {str(e)}")
+        return
 
-    to_delete = []
-
-    # Count snapshots until retain_count is reached
-    count_newest = 0
-    for snapshot_name in snapshots:
-        snapshot_date = extract_snapshot_date(snapshot_name.split('-Date')[-1])
-
-        if count_newest < retain_count:
-            count_newest += 1
-        elif is_older_than(snapshot_date, older_than):
-            to_delete.append(snapshot_name)
-
-    print_separator(logger)
-
-    logger.info(f"Snapshot Date: {to_delete}")
+    if len(newer_snapshots) >= retain_count:
+        to_delete = older_snapshots
+    else:
+        total_snapshots = len(newer_snapshots) + len(older_snapshots)
+        if total_snapshots <= retain_count:
+            return
+        retain_older_count = retain_count - len(newer_snapshots)
+        to_delete = older_snapshots[retain_older_count:]
 
     if to_delete:
-        print_separator(logger)
-        logger.info(f"Cleaning up snapshots in: {dataset}")
+        logger.info(f"Cleaning up {len(to_delete)} older snapshots for dataset {dataset}.")
         for snapshot_name in to_delete:
-            logger.info(f"Full name being deleted: {snapshot_name}")
             try:
-                subprocess.run(["zfs", "destroy", snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
+                subprocess.run(["zfs", "destroy", snapshot_name], check=True)
+                logger.info(f"Deleted snapshot: {snapshot_name}")
             except subprocess.CalledProcessError as e:
-                print_separator(logger, error_logger)
                 error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
-                raise e
+
+
             
 def delete_old_files(logger, error_logger, dataset, older_than, retain_count):
     log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
@@ -330,7 +338,7 @@ def main():
                 delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count)
             print_separator(logger)
             logger.info("Snapshot creation completed.")
-            delete_old_files(logger, error_logger, dataset, args.older_than, args.retain_count)
+            #delete_old_files(logger, error_logger, dataset, args.older_than, args.retain_count)
 
         elif args.command == 'delete':
             print_separator(logger)
@@ -339,7 +347,7 @@ def main():
                 delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count)
             print_separator(logger)
             logger.info("Snapshot deletion completed.")
-            delete_old_files(logger, error_logger, dataset, args.older_than, args.retain_count)
+            #delete_old_files(logger, error_logger, dataset, args.older_than, args.retain_count)
 
     except Exception as e:
         print_separator(logger, error_logger)

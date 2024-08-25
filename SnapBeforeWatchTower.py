@@ -181,7 +181,7 @@ def extract_snapshot_date(snapshot_name):
     date_str = snapshot_name.split('Date', 1)[-1]
     return datetime.datetime.strptime(date_str, "%Y-%m-%d_%H_%M_%S")
 
-def is_older_than(snapshot_date_str, older_than):
+def is_older_than(logger, error_logger, snapshot_date_str, older_than):
     try:
         # Convert the snapshot date string to a datetime object
         snapshot_date = datetime.datetime.strptime(snapshot_date_str, "%Y-%m-%d_%H_%M_%S")
@@ -190,7 +190,7 @@ def is_older_than(snapshot_date_str, older_than):
         return age > older_than
     except ValueError as e:
         # Log error in case of date string formatting issues
-        logger.error(f"Date conversion error in is_older_than: {str(e)}")
+        error_logger(f"Date conversion error in is_older_than: {str(e)}")
         return False  # In case of error, assume not older to prevent accidental deletion
 
    
@@ -216,9 +216,9 @@ def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count
     # Categorize snapshots into newer and older using the flexible date extraction
     try:
         newer_snapshots = [snapshot for snapshot in snapshots
-                           if not is_older_than(snap_regex.search(snapshot).group(1), older_than)]
+                           if not is_older_than(logger, error_logger, snap_regex.search(snapshot).group(1), older_than)]
         older_snapshots = [snapshot for snapshot in snapshots
-                           if is_older_than(snap_regex.search(snapshot).group(1), older_than)]
+                           if is_older_than(logger, error_logger, snap_regex.search(snapshot).group(1), older_than)]
     except Exception as e:
         error_logger.error(f"Error processing snapshot dates: {str(e)}")
         return

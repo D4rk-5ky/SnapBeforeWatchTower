@@ -269,26 +269,43 @@ retained_snapshot_dates = []
 
 def delete_old_files(logger, error_logger, log_folder, older_than, retain_count):
     global retained_snapshot_dates
-    date_pattern = re.compile(r"SnapBeforeWatchTower[-_][Dd]ate[-_]?(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})\.(log|err|digest)")
+    # Regex to accommodate 'Date', 'date' and optional dash
+    date_pattern = re.compile(r"SnapBeforeWatchTower-[Dd]ate-?(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})\.(log|err|digest)")
+
 
     files_by_date = {}
     for filename in os.listdir(log_folder):
         match = date_pattern.search(filename)
-        if match and match.group(1) not in retained_snapshot_dates:
+        if match:
             date_key = match.group(1)
             if date_key not in files_by_date:
                 files_by_date[date_key] = []
             files_by_date[date_key].append(filename)
 
-    # Deletion logic as before, now files_by_date only contains deletable files
-    for date, files in files_by_date.items():
-        for filename in files:
-            path_to_file = os.path.join(log_folder, filename)
-            try:
-                os.remove(path_to_file)
-                logger.info(f"Deleted file: {filename}")
-            except Exception as e:
-                error_logger.error(f"Failed to delete file: {filename}. Error: {str(e)}")
+    # Convert dates from strings to datetime objects
+    dated_files = {datetime.datetime.strptime(date, "%Y-%m-%d_%H_%M_%S"): files for date, files in files_by_date.items()}
+    sorted_dates = sorted(dated_files.keys())
+
+    # Filter out dates based on older_than and not in retained_snapshot_dates
+    cutoff_date = datetime.datetime.now() - older_than
+    deletable_dates = [date for date in sorted_dates if (date < cutoff_date) and (date.strftime("%Y-%m-%d_%H_%M_%S") not in retained_snapshot_dates)]
+
+    # Calculate the maximum number of files to delete, respecting retain_count
+    if len(sorted_dates) - len(deletable_dates) < retain_count:
+        deletable_dates = sorted_dates[:max(0, len(sorted_dates) - retain_count)]
+
+    # Collect files for deletion from the filtered dates
+    deletable_files = [file for date in deletable_dates for file in dated_files[date]]
+
+    # Delete the files
+    for filename in deletable_files:
+        path_to_file = os.path.join(log_folder, filename)
+        try:
+            os.remove(path_to_file)
+            logger.info(f"Deleted file: {filename}")
+        except Exception as e:
+            error_logger.error(f"Failed to delete file: {filename}. Error: {str(e)}")
+
 
 def print_separator(logger, error_logger=None):
     separator_length = 20

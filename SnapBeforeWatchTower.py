@@ -303,10 +303,6 @@ def delete_old_files(logger, error_logger, log_folder, older_than, retain_count)
         except Exception as e:
             error_logger.error(f"Failed to delete file: {filename}. Error: {str(e)}")
 
-
-
-
-
 def print_separator(logger, error_logger=None):
     separator_length = 20
     separator = "\n" + "\n" + "-" * separator_length + "\n"

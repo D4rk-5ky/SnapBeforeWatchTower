@@ -183,89 +183,55 @@ def extract_snapshot_date(snapshot_name):
 
 def is_older_than(logger, error_logger, snapshot_date_str, older_than):
     try:
-        # Convert the snapshot date string to a datetime object
         snapshot_date = datetime.datetime.strptime(snapshot_date_str, "%Y-%m-%d_%H_%M_%S")
-        today = datetime.datetime.today()
-        age = today - snapshot_date
-        return age > older_than
+        return datetime.datetime.now() - snapshot_date > older_than
     except ValueError as e:
-        # Log error in case of date string formatting issues
-        error_logger(f"Date conversion error in is_older_than: {str(e)}")
-        return False  # In case of error, assume not older to prevent accidental deletion
+        error_logger.error(f"Date conversion error: {str(e)}")
+        return False  # Assume not older to prevent accidental deletion
 
    
 def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count):
-    global retained_snapshot_dates
     try:
+        # Retrieve snapshot list from ZFS
         snapshots = subprocess.check_output(
             ["zfs", "list", "-H", "-t", "snapshot", "-o", "name", dataset],
             stderr=subprocess.PIPE
         ).decode().strip().split("\n")
     except subprocess.CalledProcessError as e:
-        error_logger.error(f"Error listing snapshots for {dataset}. Command output: {e.stderr.strip()}")
+        error_logger.error(f"Error listing snapshots for {dataset}: {e.stderr.strip()}")
         return
 
-    retained_snapshot_dates.clear()
-
-    # Updated regex to match both naming conventions
+    # Regex to match snapshot names correctly handling both 'Date' and 'Date-'
     snap_regex = re.compile(r"SnapBeforeWatchTower-Date-?(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})")
 
     # Filter snapshots based on the regex
-    snapshots = [snapshot for snapshot in snapshots if snap_regex.search(snapshot)]
-
-    # Categorize snapshots into newer and older using the flexible date extraction
+    valid_snapshots = [snapshot for snapshot in snapshots if snap_regex.search(snapshot)]
+    
+    # Categorize snapshots into newer and older
     try:
-        newer_snapshots = [snapshot for snapshot in snapshots
+        newer_snapshots = [snapshot for snapshot in valid_snapshots
                            if not is_older_than(logger, error_logger, snap_regex.search(snapshot).group(1), older_than)]
-        older_snapshots = [snapshot for snapshot in snapshots
+        older_snapshots = [snapshot for snapshot in valid_snapshots
                            if is_older_than(logger, error_logger, snap_regex.search(snapshot).group(1), older_than)]
     except Exception as e:
         error_logger.error(f"Error processing snapshot dates: {str(e)}")
         return
 
-    if len(newer_snapshots) >= retain_count:
-        to_delete = older_snapshots
-    else:
-        total_snapshots = len(newer_snapshots) + len(older_snapshots)
-        if total_snapshots <= retain_count:
-            retained_snapshot_dates += [snap_regex.search(s).group(1) for s in newer_snapshots + older_snapshots]
-            return
-        retain_older_count = retain_count - len(newer_snapshots)
-        to_delete = older_snapshots[retain_older_count:]
-        retained_snapshot_dates += [snap_regex.search(s).group(1) for s in newer_snapshots + older_snapshots[retain_older_count:]]
+    # Decide which snapshots to delete
+    if len(newer_snapshots) + len(older_snapshots) <= retain_count:
+        # If total snapshots are less than or equal to retain count, do nothing
+        return
 
+    to_delete = older_snapshots if len(newer_snapshots) >= retain_count else older_snapshots[:-retain_count + len(newer_snapshots)]
+
+    # Perform deletion of selected snapshots
     for snapshot_name in to_delete:
         try:
             subprocess.run(["zfs", "destroy", snapshot_name], check=True)
             logger.info(f"Deleted snapshot: {snapshot_name}")
         except subprocess.CalledProcessError as e:
-            error_logger.error(f"Error deleting snapshot {snapshot_name}. Command output: {e.stderr.strip()}")
+            error_logger.error(f"Error deleting snapshot {snapshot_name}: {e.stderr.strip()}")
 
-    # Update the global list with dates of snapshots that were not deleted
-    retained_snapshot_dates += [snap_regex.search(s).group(1) for s in snapshots if s not in to_delete]
-
-
-
-
-def get_log_folder():
-    # This function returns the path to the logs directory located in the same directory as the script.
-    script_dir = os.path.dirname(os.path.abspath(__file__))  # Get the directory where the script is located.
-    log_folder = os.path.join(script_dir, "logs")  # Path to the logs directory.
-    return log_folder
-
-def group_files_by_date(log_folder, date_pattern):
-    files_by_date = {}
-    for filename in os.listdir(log_folder):
-        match = date_pattern.search(filename)
-        if match:
-            date_key = match.group(1)
-            if date_key not in files_by_date:
-                files_by_date[date_key] = []
-            files_by_date[date_key].append(filename)
-    return files_by_date
-
-# Global list to keep dates of retained snapshots
-retained_snapshot_dates = []
 
 def delete_old_files(logger, error_logger, log_folder, older_than, retain_count):
     # older_than is already a datetime.timedelta object, no need to parse

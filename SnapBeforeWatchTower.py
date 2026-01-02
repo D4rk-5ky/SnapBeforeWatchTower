@@ -1,14 +1,14 @@
 #!/usr/bin/python3
-
-import re
-import subprocess
-import datetime
-import argparse
-import shutil
-import sys
 import os
+import re
+import datetime
 import logging
+import subprocess
+import argparse
 import glob
+import sys
+from typing import List, Tuple, Optional
+import tempfile
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -19,7 +19,7 @@ class CustomLogger(logging.Logger):
 
         # Set up log file handler
         file_handler = logging.FileHandler(log_filename)
-        file_handler.setLevel(logging.INFO)
+        file_handler.setLevel(logging.DEBUG)  # or INFO as desired
         file_handler.setFormatter(formatter)
         self.addHandler(file_handler)
 
@@ -29,30 +29,143 @@ class CustomLogger(logging.Logger):
         console_handler.setFormatter(formatter)
         self.addHandler(console_handler)
         
-def setup_logger(log_folder, log_date):
-    global err_filepath  # Use the global variable
-    log_filename = f"SnapBeforeWatchTower-Date-{log_date}.log"
-    log_filepath = os.path.join(log_folder, log_filename)
+def setup_logger(log_folder: str, log_date: str) -> Tuple[logging.Logger, logging.Logger, str]:
+    """
+    Creates two loggers:
+      - main logger: INFO to console, DEBUG to .log
+      - error logger: ERROR to console and ERROR to .err
 
-    # Set up logger for normal output
-    logger = CustomLogger("SnapBeforeWatchTower", log_filepath)
+    Returns: (logger, error_logger, err_filepath)
+    """
+    os.makedirs(log_folder, exist_ok=True)
 
-    # Set the logger level
-    logger.setLevel(logging.DEBUG)
+    log_filepath = os.path.join(log_folder, f"SnapBeforeWatchTower-Date-{log_date}.log")
+    err_filepath = os.path.join(log_folder, f"SnapBeforeWatchTower-Date-{log_date}.err")
 
-    # Set up logger for errors
-    err_filename = f"SnapBeforeWatchTower-Date-{log_date}.err"
-    err_filepath = os.path.join(log_folder, err_filename)
-    error_logger = CustomLogger("SnapBeforeWatchTowerError", err_filepath)
+    fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-    # Set the error logger level
-    error_logger.setLevel(logging.ERROR)
+    def _build_logger(name: str, level: int, handlers: List[logging.Handler]) -> logging.Logger:
+        lg = logging.getLogger(name)
+        lg.setLevel(level)
+        lg.propagate = False  # do not double-log via root logger
 
-    return logger, error_logger
+        # Prevent duplicate handlers if the script is run multiple times in-process
+        if lg.handlers:
+            # If you *really* want to rebuild handlers each time, clear:
+            lg.handlers.clear()
+
+        for h in handlers:
+            h.setFormatter(fmt)
+            lg.addHandler(h)
+
+        return lg
+
+    # Main logger handlers
+    file_h = logging.FileHandler(log_filepath)
+    file_h.setLevel(logging.DEBUG)
+
+    console_h = logging.StreamHandler()
+    console_h.setLevel(logging.INFO)
+
+    logger = _build_logger(
+        name="SnapBeforeWatchTower",
+        level=logging.DEBUG,
+        handlers=[file_h, console_h],
+    )
+
+    # Error logger handlers (err file + console)
+    err_file_h = logging.FileHandler(err_filepath)
+    err_file_h.setLevel(logging.ERROR)
+
+    err_console_h = logging.StreamHandler()
+    err_console_h.setLevel(logging.ERROR)
+
+    error_logger = _build_logger(
+        name="SnapBeforeWatchTowerError",
+        level=logging.ERROR,
+        handlers=[err_file_h, err_console_h],
+    )
+
+    return logger, error_logger, err_filepath
+
+def choose_log_folder(preferred_root_folder: str, fallback_folder: str | None = None) -> str:
+    """
+    If running as root, use preferred_root_folder.
+    If not root, use fallback_folder or a temp directory.
+    Ensures the returned folder exists and is writable.
+    """
+    is_root = (os.geteuid() == 0)
+
+    if is_root:
+        os.makedirs(preferred_root_folder, exist_ok=True)
+        return preferred_root_folder
+
+    # Not root: use fallback
+    if fallback_folder is None:
+        fallback_folder = os.path.join(tempfile.gettempdir(), "SnapBeforeWatchTower")
+
+    os.makedirs(fallback_folder, exist_ok=True)
+    return fallback_folder
+
+def pick_log_folder(script_log_folder: str, tmp_name: str = "SnapBeforeWatchTower") -> str:
+    """
+    Policy:
+      - If NOT root: always use /tmp/<tmp_name>
+      - If root: try <script>/logs; if not writable, fall back to /tmp/<tmp_name>
+    """
+    tmp_folder = os.path.join(tempfile.gettempdir(), tmp_name)
+
+    def _ensure_writable(path: str) -> bool:
+        try:
+            os.makedirs(path, exist_ok=True)
+            test_path = os.path.join(path, ".write_test")
+            with open(test_path, "w", encoding="utf-8") as f:
+                f.write("ok")
+            os.remove(test_path)
+            return True
+        except Exception:
+            return False
+
+    if os.geteuid() != 0:
+        os.makedirs(tmp_folder, exist_ok=True)
+        return tmp_folder
+
+    # root path
+    if _ensure_writable(script_log_folder):
+        return script_log_folder
+
+    os.makedirs(tmp_folder, exist_ok=True)
+    return tmp_folder
+
+class CommandError(RuntimeError):
+    def __init__(self, cmd, returncode, stdout, stderr):
+        super().__init__(f"Command failed ({returncode}): {' '.join(cmd)}")
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+def run_cmd(cmd, logger=None, error_logger=None, check=True):
+    """
+    Runs a command with captured stdout/stderr so the terminal doesn't get spammed.
+    If check=True, raises CommandError on failure.
+    """
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+
+    if proc.returncode != 0:
+        if error_logger:
+            error_logger.error(f"Command failed: {' '.join(cmd)} (rc={proc.returncode})")
+            if proc.stderr.strip():
+                error_logger.error(proc.stderr.strip())
+        if check:
+            raise CommandError(cmd, proc.returncode, proc.stdout, proc.stderr)
+
+    return proc
 
 def get_newest_files(log_dir, prefix):
     files = glob.glob(os.path.join(log_dir, f"{prefix}*"))
-    files.sort(key=os.path.getctime, reverse=True)
+    # Use modification time (mtime) which is more portable than creation time
+    files.sort(key=os.path.getmtime, reverse=True)
     
     newest_log = None
     newest_err = None
@@ -88,8 +201,7 @@ def send_mail(subject, body, recipient, attachment_files=None):
 # In case one needs to be notified of errors
 #
 # FIx and make sure to make it possible to send error message even if .out file is not created yet
-def MailTo(logger, error_logger, recipient):
-    log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+def MailTo(logger, error_logger, recipient, log_folder):
     
     print_separator(logger)
 
@@ -111,14 +223,14 @@ def MailTo(logger, error_logger, recipient):
     if newest_err:
         attachment_files.append(newest_err)
 
-     # Read contents of .err file
-    if os.path.isfile(newest_err):
+    # Read contents of .err file if present
+    if newest_err and os.path.isfile(newest_err):
         with open(newest_err, 'r') as err_file:
             err_contents = err_file.read()
             body += "----------\n\n.err file\n" + err_contents
 
-    # Read contents of .log file
-    if os.path.isfile(newest_log):
+    # Read contents of .log file if present
+    if newest_log and os.path.isfile(newest_log):
         with open(newest_log, 'r') as log_file:
             log_contents = log_file.read()
             body += "----------\n\n.log file\n" + log_contents
@@ -134,7 +246,7 @@ def MailTo(logger, error_logger, recipient):
 def WasMailSent(logger, error_logger, MailExitCode, popenstderr):
     if MailExitCode == 0:
         print_separator(logger)
-        logger.info('Mail was send succesfully')
+        logger.info('Mail was sent successfully')
     else:
         print_separator(logger, error_logger)
         error_logger.error('There was an error sending the mail')
@@ -190,84 +302,145 @@ def is_older_than(logger, error_logger, snapshot_date_str, older_than):
         return False  # Assume not older to prevent accidental deletion
 
    
-def delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count):
-    try:
-        # Retrieve snapshot list from ZFS
-        snapshots = subprocess.check_output(
-            ["zfs", "list", "-H", "-t", "snapshot", "-o", "name", dataset],
-            stderr=subprocess.PIPE
-        ).decode().strip().split("\n")
-    except subprocess.CalledProcessError as e:
-        error_logger.error(f"Error listing snapshots for {dataset}: {e.stderr.strip()}")
+def delete_old_snapshots(
+    logger: logging.Logger,
+    error_logger: logging.Logger,
+    dataset: str,
+    older_than: datetime.timedelta,
+    retain_count: int,
+) -> None:
+    """
+    Correct retention behavior:
+      - always keep the newest `retain_count` matching snapshots (by parsed timestamp)
+      - for older snapshots beyond that, delete only those older than cutoff
+
+    Snapshot name pattern expected:
+      SnapBeforeWatchTower-Date-YYYY-MM-DD_HH_MM_SS
+      (also accepts DateYYYY... or Date-YYYY... via regex)
+    """
+    snap_regex = re.compile(
+        r"^(?P<full>.+)@SnapBeforeWatchTower-Date-?(?P<ts>\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})$"
+    )
+
+    # List snapshots (non-recursive, matching your current behavior)
+    # If you want recursive, change to: ["zfs","list","-H","-t","snapshot","-o","name","-r",dataset]
+    proc = run_cmd(["zfs", "list", "-H", "-t", "snapshot", "-o", "name", dataset], logger, error_logger, check=True)
+    if proc.returncode != 0:
+        error_logger.error(f"Error listing snapshots for {dataset}: {proc.stderr.strip()}")
         return
 
-    # Regex to match snapshot names correctly handling both 'Date' and 'Date-'
-    snap_regex = re.compile(r"SnapBeforeWatchTower-Date-?(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})")
-
-    # Filter snapshots based on the regex
-    valid_snapshots = [snapshot for snapshot in snapshots if snap_regex.search(snapshot)]
-    
-    # Categorize snapshots into newer and older
-    try:
-        newer_snapshots = [snapshot for snapshot in valid_snapshots
-                           if not is_older_than(logger, error_logger, snap_regex.search(snapshot).group(1), older_than)]
-        older_snapshots = [snapshot for snapshot in valid_snapshots
-                           if is_older_than(logger, error_logger, snap_regex.search(snapshot).group(1), older_than)]
-    except Exception as e:
-        error_logger.error(f"Error processing snapshot dates: {str(e)}")
+    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    if not lines:
         return
 
-    # Decide which snapshots to delete
-    if len(newer_snapshots) + len(older_snapshots) <= retain_count:
-        # If total snapshots are less than or equal to retain count, do nothing
-        return
-
-    to_delete = older_snapshots if len(newer_snapshots) >= retain_count else older_snapshots[:-retain_count + len(newer_snapshots)]
-
-    # Perform deletion of selected snapshots
-    for snapshot_name in to_delete:
+    snaps = []
+    for s in lines:
+        m = snap_regex.match(s)
+        if not m:
+            continue
+        ts_str = m.group("ts")
         try:
-            subprocess.run(["zfs", "destroy", snapshot_name], check=True)
-            logger.info(f"Deleted snapshot: {snapshot_name}")
-        except subprocess.CalledProcessError as e:
-            error_logger.error(f"Error deleting snapshot {snapshot_name}: {e.stderr.strip()}")
+            ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d_%H_%M_%S")
+        except ValueError as e:
+            error_logger.error(f"Skipping snapshot with unparseable timestamp: {s} ({e})")
+            continue
+        snaps.append((ts, s))
+
+    if not snaps:
+        return
+
+    # Newest first
+    snaps.sort(key=lambda x: x[0], reverse=True)
+
+    # Always keep newest retain_count
+    keep_set = set(s for _, s in snaps[:max(retain_count, 0)])
+
+    cutoff = datetime.datetime.now() - older_than
+
+    # Only delete snapshots not in keep_set AND older than cutoff
+    to_delete = [s for ts, s in snaps if (s not in keep_set and ts < cutoff)]
+
+    logger.info(f"[{dataset}] Found {len(snaps)} matching snapshots (retain_count={retain_count}).")
+    logger.info(f"[{dataset}] Cutoff time: {cutoff.strftime('%Y-%m-%d %H:%M:%S')}  (older_than={older_than})")
+    logger.info(f"[{dataset}] Will delete {len(to_delete)} snapshot(s).")
+
+    if not to_delete:
+        logger.info(f"[{dataset}] Nothing to delete.")
+        return
+
+    for snap_name in to_delete:
+        run_cmd(
+            ["zfs", "destroy", snap_name],
+            logger=logger,
+            error_logger=error_logger,
+            check=True,   # 👈 this is the important part
+        )
+        logger.info(f"[{dataset}] Deleted snapshot: {snap_name}")
 
 
-def delete_old_files(logger, error_logger, log_folder, older_than, retain_count):
-    # older_than is already a datetime.timedelta object, no need to parse
+def delete_old_files(
+    logger: logging.Logger,
+    error_logger: logging.Logger,
+    log_folder: str,
+    older_than: datetime.timedelta,
+    retain_count: int,
+) -> None:
+    """
+    Deletes old log groups (.log/.err/.digest) based on embedded timestamp, while keeping
+    at least `retain_count` newest timestamp groups overall.
 
-    # Regex to match both "Date" and "Date-" formats in the filename
-    date_pattern = re.compile(r"SnapBeforeWatchTower[-_][Dd]ate[-_]?(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})\.(log|err|digest)")
+    Fixes the edge case where `eligible_for_deletion[:-0]` would become empty.
+    """
+    os.makedirs(log_folder, exist_ok=True)
 
-    files_by_date = {}
+    # Matches:
+    #   SnapBeforeWatchTower-Date-YYYY-MM-DD_HH_MM_SS.log|err|digest
+    # and some minor variations you already support
+    date_pattern = re.compile(
+        r"SnapBeforeWatchTower[-_][Dd]ate[-_]?(?P<ts>\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})\.(?P<ext>log|err|digest)$"
+    )
+
+    files_by_ts: dict[datetime.datetime, List[str]] = {}
+
     for filename in os.listdir(log_folder):
-        match = date_pattern.search(filename)
-        if match:
-            date_key = match.group(1)
-            if date_key not in files_by_date:
-                files_by_date[date_key] = []
-            files_by_date[date_key].append(filename)
-
-    dated_files = {datetime.datetime.strptime(date, "%Y-%m-%d_%H_%M_%S"): files for date, files in files_by_date.items()}
-    sorted_dates = sorted(dated_files.keys())
-
-    cutoff_date = datetime.datetime.now() - older_than
-
-    eligible_for_deletion = [date for date in sorted_dates if date < cutoff_date]
-
-    if len(sorted_dates) - len(eligible_for_deletion) < retain_count:
-        to_retain = retain_count - (len(sorted_dates) - len(eligible_for_deletion))
-        eligible_for_deletion = eligible_for_deletion[:-to_retain]
-
-    files_to_delete = [file for date in eligible_for_deletion for file in dated_files[date]]
-
-    for filename in files_to_delete:
-        path_to_file = os.path.join(log_folder, filename)
+        m = date_pattern.search(filename)
+        if not m:
+            continue
+        ts_str = m.group("ts")
         try:
-            os.remove(path_to_file)
-            logger.info(f"Deleted file: {filename}")
-        except Exception as e:
-            error_logger.error(f"Failed to delete file: {filename}. Error: {str(e)}")
+            ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d_%H_%M_%S")
+        except ValueError:
+            continue
+        files_by_ts.setdefault(ts, []).append(filename)
+
+    if not files_by_ts:
+        return
+
+    # Oldest -> newest
+    all_dates = sorted(files_by_ts.keys())
+
+    cutoff = datetime.datetime.now() - older_than
+    eligible = [d for d in all_dates if d < cutoff]
+
+    # Ensure we keep at least `retain_count` newest groups overall
+    keep_needed = max(retain_count, 0)
+    currently_kept = len(all_dates) - len(eligible)
+
+    if currently_kept < keep_needed:
+        # We must retain some of the newest dates from the eligible list
+        to_retain = keep_needed - currently_kept
+        if to_retain > 0:
+            eligible = eligible[:-to_retain]  # keep newest `to_retain` among eligible
+
+    # Delete all files for the remaining eligible date groups
+    for d in eligible:
+        for filename in files_by_ts.get(d, []):
+            path_to_file = os.path.join(log_folder, filename)
+            try:
+                os.remove(path_to_file)
+                logger.info(f"Deleted file: {filename}")
+            except Exception as e:
+                error_logger.error(f"Failed to delete file: {filename}. Error: {e}")
 
 def print_separator(logger, error_logger=None):
     separator_length = 20
@@ -277,14 +450,56 @@ def print_separator(logger, error_logger=None):
         error_logger.error(separator)
     else:
         logger.info(separator)
-        
-def save_docker_image_digests():
-    log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+
+def save_docker_image_digests(
+    logger: logging.Logger,
+    error_logger: logging.Logger,
+    log_folder: str,
+    log_date: str,
+) -> Optional[str]:
+    """
+    Save `docker images --digests` output to a .digest file that shares the same
+    timestamp as the .log/.err group for this run.
+
+    Returns the digest filepath on success, or None on failure.
+    """
     os.makedirs(log_folder, exist_ok=True)
-    filename = f"SnapBeforeWatchTower-Date-{datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')}.digest"
+
+    filename = f"SnapBeforeWatchTower-Date-{log_date}.digest"
     filepath = os.path.join(log_folder, filename)
-    with open(filepath, "w") as file:
-        subprocess.run(["docker", "images", "--digests"], stdout=file)
+
+    # Run docker and capture output
+    proc = subprocess.run(
+        ["docker", "images", "--digests"],
+        capture_output=True,
+        text=True,
+    )
+
+    if proc.returncode != 0:
+        # Don’t leave behind an empty/partial file
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        except Exception:
+            pass
+
+        error_logger.error("Failed to collect docker image digests.")
+        if proc.stderr.strip():
+            error_logger.error(proc.stderr.strip())
+        else:
+            error_logger.error("No stderr from docker. Is the Docker daemon running?")
+        return None
+
+    # Write output only on success
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(proc.stdout)
+        logger.info(f"Wrote docker image digests: {filepath}")
+        return filepath
+    except Exception as e:
+        error_logger.error(f"Failed to write digest file {filepath}: {e}")
+        return None
+
 
 def main():
     global err_filepath  # Use the global variable
@@ -296,20 +511,40 @@ def main():
     parser.add_argument('--send-mail', metavar='EMAIL', help='Send an email notification to the specified email address')
     
     args = parser.parse_args()
-
+        
     log_date = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
-    log_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    os.makedirs(log_folder, exist_ok=True)
+    # Pick log folder: root-only folder if root, otherwise /tmp fallback
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    preferred_log_folder = os.path.join(SCRIPT_DIR, "logs")
+    log_folder = pick_log_folder(preferred_log_folder)
 
     # Create separate loggers for main logs and error logs
-    logger, error_logger = setup_logger(log_folder, log_date)
+    logger, error_logger, err_filepath = setup_logger(log_folder, log_date)
+
+    # If not root: log once, optionally mail, and exit BEFORE running zfs/docker/etc.
+    if os.geteuid() != 0:
+        msg = (
+            "This script must be run as root (sudo). "
+            f"Logs were written to: {log_folder} (fallback, because not root)."
+        )
+        error_logger.error(msg)
+
+        # Optional: send a minimal mail even when not root.
+        # (Attach the fallback logs from /tmp if you want.)
+        try:
+            MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
+        except Exception as mail_e:
+            error_logger.error(f"Additionally failed to send mail: {mail_e}")
+
+        # Clean exit so you don't flood the terminal with zfs permission errors
+        sys.exit(1)
 
     with open(args.file, "r") as file:
         datasets = file.read().splitlines()
 
     try:
         if args.command == 'create':
-            save_docker_image_digests()
+            save_docker_image_digests(logger, error_logger, log_folder, log_date)
             print_separator(logger)
             logger.info("Starting snapshot creation...")
             for dataset in datasets:
@@ -330,11 +565,13 @@ def main():
             delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count)
 
     except Exception as e:
-        print_separator(logger, error_logger)
-        error_logger.exception("An error occurred:")
-        print_separator(logger, error_logger)
-        if args.send_mail:
-            MailTo(logger, error_logger, args.send_mail)
+        error_logger.error(f"Fatal error: {e}")
+        # Always attempt mail, even if partial
+        try:
+            MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)  # whatever your signature is
+        except Exception as mail_e:
+            error_logger.error(f"Additionally failed to send mail: {mail_e}")
+        raise  # or sys.exit(1)
 
     finally:
         # Check if the .err file is empty, and remove it if it is
@@ -343,3 +580,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

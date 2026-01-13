@@ -209,7 +209,7 @@ def send_mail(subject, body, recipient, attachment_files=None):
 # In case one needs to be notified of errors
 #
 # FIx and make sure to make it possible to send error message even if .out file is not created yet
-def MailToSuccess(logger, error_logger, recipient, log_folder):
+def MailTo(logger, error_logger, recipient, log_folder):
     print_separator(logger)
     logger.info("Mail-on-success is enabled (-mos). Sending success mail.")
 
@@ -390,7 +390,7 @@ def delete_old_snapshots(
         if dry_run:
             logger.info(f"[DRY-RUN] Would delete snapshot: {snap_name}")
         else:
-            logger.info(f"Deleted snapshot: {snap_name}")
+            logger.info(f"Deletedsnapshot: {snap_name}")
 
 
 def delete_old_files(
@@ -631,7 +631,7 @@ def main():
         # If run was successful and user asked for mail on success
         if (not had_error) and args.send_mail and args.mail_on_success:
             try:
-                MailToSuccess(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
+                MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
             except Exception as mail_e:
                 error_logger.error(f"Failed to send success mail: {mail_e}")
 

@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+from asyncio.log import logger
 import os
 import re
 import datetime
@@ -145,11 +146,18 @@ class CommandError(RuntimeError):
         self.stdout = stdout
         self.stderr = stderr
 
-def run_cmd(cmd, logger=None, error_logger=None, check=True):
+def run_cmd(cmd, logger=None, error_logger=None, check=True, dry_run=False):
     """
     Runs a command with captured stdout/stderr so the terminal doesn't get spammed.
     If check=True, raises CommandError on failure.
+    If dry_run=True, does NOT execute the command.
     """
+    if dry_run:
+        #if logger:
+        #    logger.info(f"[DRY-RUN] Would run: {' '.join(cmd)}")
+        # mimic a successful completed process
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    
     proc = subprocess.run(cmd, capture_output=True, text=True)
 
     if proc.returncode != 0:
@@ -274,12 +282,17 @@ def parse_older_than(value):
     else:
         raise argparse.ArgumentTypeError("Invalid value for --older-than. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
 
-def create_snapshot(logger, error_logger, dataset):
+def create_snapshot(logger, error_logger, dataset, dry_run=False):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
     snapshot_name = f"SnapBeforeWatchTower-Date-{timestamp}"
     full_snapshot_name = f"{dataset}@{snapshot_name}"
     logger.info(f"Creating snapshot of: {dataset}")
     logger.debug(f"Full snapshot name: {full_snapshot_name}")
+
+    if dry_run:
+        logger.info("")
+        logger.info(f"[DRY-RUN] Would create snapshot: {full_snapshot_name}")
+        return
 
     try:
         subprocess.run(["zfs", "snapshot", full_snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
@@ -308,6 +321,7 @@ def delete_old_snapshots(
     dataset: str,
     older_than: datetime.timedelta,
     retain_count: int,
+    dry_run=False
 ) -> None:
     """
     Correct retention behavior:
@@ -364,6 +378,8 @@ def delete_old_snapshots(
     logger.info(f"[{dataset}] Cutoff time: {cutoff.strftime('%Y-%m-%d %H:%M:%S')}  (older_than={older_than})")
     logger.info(f"[{dataset}] Will delete {len(to_delete)} snapshot(s).")
 
+    logger.info("")
+
     if not to_delete:
         logger.info(f"[{dataset}] Nothing to delete.")
         return
@@ -373,9 +389,13 @@ def delete_old_snapshots(
             ["zfs", "destroy", snap_name],
             logger=logger,
             error_logger=error_logger,
-            check=True,   # 👈 this is the important part
+            check=True,
+            dry_run=dry_run,
         )
-        logger.info(f"[{dataset}] Deleted snapshot: {snap_name}")
+        if dry_run:
+            logger.info(f"[DRY-RUN] Would delete snapshot: {snap_name}")
+        else:
+            logger.info(f"[{dataset}] Deleted snapshot: {snap_name}")
 
 
 def delete_old_files(
@@ -384,6 +404,7 @@ def delete_old_files(
     log_folder: str,
     older_than: datetime.timedelta,
     retain_count: int,
+    dry_run=False
 ) -> None:
     """
     Deletes old log groups (.log/.err/.digest) based on embedded timestamp, while keeping
@@ -436,11 +457,14 @@ def delete_old_files(
     for d in eligible:
         for filename in files_by_ts.get(d, []):
             path_to_file = os.path.join(log_folder, filename)
-            try:
-                os.remove(path_to_file)
-                logger.info(f"Deleted file: {filename}")
-            except Exception as e:
-                error_logger.error(f"Failed to delete file: {filename}. Error: {e}")
+            if dry_run:
+                logger.info(f"[DRY-RUN] Would delete file: {filename}")
+            else:
+                try:
+                    os.remove(path_to_file)
+                    logger.info(f"Deleted file: {filename}")
+                except Exception as e:
+                    error_logger.error(f"Failed to delete file: {filename}. Error: {e}")
 
 def print_separator(logger, error_logger=None):
     separator_length = 20
@@ -456,6 +480,7 @@ def save_docker_image_digests(
     error_logger: logging.Logger,
     log_folder: str,
     log_date: str,
+    dry_run=False
 ) -> Optional[str]:
     """
     Save `docker images --digests` output to a .digest file that shares the same
@@ -463,6 +488,11 @@ def save_docker_image_digests(
 
     Returns the digest filepath on success, or None on failure.
     """
+
+    if dry_run:
+        logger.info("[DRY-RUN] Would collect docker image digests")
+        return None
+
     os.makedirs(log_folder, exist_ok=True)
 
     filename = f"SnapBeforeWatchTower-Date-{log_date}.digest"
@@ -506,12 +536,14 @@ def main():
     parser = argparse.ArgumentParser(description='Create or delete snapshots for ZFS datasets.')
     parser.add_argument('-c', '--command', choices=['create', 'delete'], required=True, help='Command: create or delete')
     parser.add_argument('-f', '--file', required=True, help='Path to the file containing the dataset names')
-    parser.add_argument('--older-than', type=parse_older_than, required=True, help="Delete snapshots older than 'Nd', 'Nw', or 'Nm' (N=integer)")
-    parser.add_argument('--retain-count', type=int, required=True, help='Number of snapshots to retain despite being older')
-    parser.add_argument('--send-mail', metavar='EMAIL', help='Send an email notification to the specified email address')
-    
+    parser.add_argument('-o', '--older-than', type=parse_older_than, required=True, help="Delete snapshots older than 'Nd', 'Nw', or 'Nm' (N=integer)")
+    parser.add_argument('-r', '--retain-count', type=int, required=True, help='Number of snapshots to retain despite being older')
+    parser.add_argument('-s', '--send-mail', metavar='EMAIL', help='Send an email notification to the specified email address')
+    parser.add_argument('-d', '--dry-run', action='store_true', help='Dry run: show what would be done without making changes')
     args = parser.parse_args()
-        
+    
+    dry_run = args.dry_run
+
     log_date = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
     # Pick log folder: root-only folder if root, otherwise /tmp fallback
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -520,6 +552,9 @@ def main():
 
     # Create separate loggers for main logs and error logs
     logger, error_logger, err_filepath = setup_logger(log_folder, log_date)
+
+    if dry_run:
+        logger.info("========== DRY-RUN MODE ENABLED ==========")
 
     # If not root: log once, optionally mail, and exit BEFORE running zfs/docker/etc.
     if os.geteuid() != 0:
@@ -544,25 +579,41 @@ def main():
 
     try:
         if args.command == 'create':
-            save_docker_image_digests(logger, error_logger, log_folder, log_date)
+            save_docker_image_digests(logger, error_logger, log_folder, log_date, dry_run=dry_run)
+
             print_separator(logger)
-            logger.info("Starting snapshot creation...")
+            logger.info("Starting snapshot creation..." + (" [DRY-RUN]" if dry_run else ""))
+
             for dataset in datasets:
+
                 print_separator(logger)
-                create_snapshot(logger, error_logger, dataset)
-                delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count)
+
+                create_snapshot(logger, error_logger, dataset, dry_run=dry_run)
+
+                # 🔹 NEW: spacing between create and stats
+                logger.info("")
+
+                delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
+
             print_separator(logger)
             logger.info("Snapshot creation completed.")
-            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count)
+
+            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run)
 
         elif args.command == 'delete':
             print_separator(logger)
-            logger.info("Starting snapshot deletion...")
+            logger.info("Starting snapshot deletion..." + (" [DRY-RUN]" if dry_run else ""))
+
             for dataset in datasets:
-                delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count)
-            print_separator(logger)
+                delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
+                # 🔹 NEW: spacing between create and stats
+                print_separator(logger)
+            
+            
             logger.info("Snapshot deletion completed.")
-            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count)
+
+            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run)
+
 
     except Exception as e:
         error_logger.error(f"Fatal error: {e}")

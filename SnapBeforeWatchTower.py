@@ -390,7 +390,7 @@ def delete_old_snapshots(
         if dry_run:
             logger.info(f"[DRY-RUN] Would delete snapshot: {snap_name}")
         else:
-            logger.info(f"Deletedsnapshot: {snap_name}")
+            logger.info(f"Deleted snapshot: {snap_name}")
 
 
 def delete_old_files(

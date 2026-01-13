@@ -209,47 +209,42 @@ def send_mail(subject, body, recipient, attachment_files=None):
 # In case one needs to be notified of errors
 #
 # FIx and make sure to make it possible to send error message even if .out file is not created yet
-def MailTo(logger, error_logger, recipient, log_folder):
-    
+def MailToSuccess(logger, error_logger, recipient, log_folder):
     print_separator(logger)
+    logger.info("Mail-on-success is enabled (-mos). Sending success mail.")
 
-    logger.info('There is an option to send a mail')
-
-    # Define subject
-    subject = "Error snapshotting or cleaning up snapshots/logs - attaching logs"
-
-    # Get the latest .log and .err files
+    subject = "SnapBeforeWatchTower completed successfully - attaching latest log"
     newest_log, newest_err = get_newest_files(log_folder, "SnapBeforeWatchTower")
+
     attachment_files = []
-    
-    # Start by creating an empty body
-    body = ""
-    
-    # Add the latest .log and .err files to the attachment list
+    body = "SnapBeforeWatchTower finished successfully.\n"
+
+    # Attach latest .log if present
     if newest_log:
         attachment_files.append(newest_log)
-    if newest_err:
-        attachment_files.append(newest_err)
 
-    # Read contents of .err file if present
+        # Include log content in body (optional; you can remove this if you only want attachments)
+        if os.path.isfile(newest_log):
+            with open(newest_log, "r", encoding="utf-8", errors="replace") as f:
+                body += "\n----------\n\n.log file\n" + f.read()
+
+    # Only attach .err if it exists AND is non-empty (success mail shouldn't include empty error logs)
     if newest_err and os.path.isfile(newest_err):
-        with open(newest_err, 'r') as err_file:
-            err_contents = err_file.read()
-            body += "----------\n\n.err file\n" + err_contents
+        try:
+            if os.path.getsize(newest_err) > 0:
+                attachment_files.append(newest_err)
+                with open(newest_err, "r", encoding="utf-8", errors="replace") as f:
+                    body += "\n----------\n\n.err file (non-empty)\n" + f.read()
+        except Exception:
+            pass
 
-    # Read contents of .log file if present
-    if newest_log and os.path.isfile(newest_log):
-        with open(newest_log, 'r') as log_file:
-            log_contents = log_file.read()
-            body += "----------\n\n.log file\n" + log_contents
-
-    # Send the Mail
     mail_exit_code, stderr_output = send_mail(subject, body, recipient, attachment_files)
-                
+
     if mail_exit_code == 0:
         WasMailSent(logger, error_logger, 0, "")
     else:
         WasMailSent(logger, error_logger, mail_exit_code, stderr_output)
+
 
 def WasMailSent(logger, error_logger, MailExitCode, popenstderr):
     if MailExitCode == 0:
@@ -395,7 +390,7 @@ def delete_old_snapshots(
         if dry_run:
             logger.info(f"[DRY-RUN] Would delete snapshot: {snap_name}")
         else:
-            logger.info(f"[{dataset}] Deleted snapshot: {snap_name}")
+            logger.info(f"Deleted snapshot: {snap_name}")
 
 
 def delete_old_files(
@@ -539,6 +534,7 @@ def main():
     parser.add_argument('-o', '--older-than', type=parse_older_than, required=True, help="Delete snapshots older than 'Nd', 'Nw', or 'Nm' (N=integer)")
     parser.add_argument('-r', '--retain-count', type=int, required=True, help='Number of snapshots to retain despite being older')
     parser.add_argument('-s', '--send-mail', metavar='EMAIL', help='Send an email notification to the specified email address')
+    parser.add_argument('-mos', '--mail-on-success', action='store_true', help='Send a success email notification to the specified email address')
     parser.add_argument('-d', '--dry-run', action='store_true', help='Dry run: show what would be done without making changes')
     args = parser.parse_args()
     
@@ -564,18 +560,18 @@ def main():
         )
         error_logger.error(msg)
 
-        # Optional: send a minimal mail even when not root.
-        # (Attach the fallback logs from /tmp if you want.)
-        try:
-            MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
-        except Exception as mail_e:
-            error_logger.error(f"Additionally failed to send mail: {mail_e}")
+        if args.send_mail:
+            try:
+                MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
+            except Exception as mail_e:
+                error_logger.error(f"Additionally failed to send mail: {mail_e}")
 
-        # Clean exit so you don't flood the terminal with zfs permission errors
         sys.exit(1)
 
     with open(args.file, "r") as file:
         datasets = file.read().splitlines()
+
+    had_error = False
 
     try:
         if args.command == 'create':
@@ -604,6 +600,8 @@ def main():
             print_separator(logger)
             logger.info("Starting snapshot deletion..." + (" [DRY-RUN]" if dry_run else ""))
 
+            print_separator(logger)
+
             for dataset in datasets:
                 delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
                 # 🔹 NEW: spacing between create and stats
@@ -612,19 +610,31 @@ def main():
             
             logger.info("Snapshot deletion completed.")
 
+            print_separator(logger)
+
             delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run)
 
 
     except Exception as e:
+        had_error = True
         error_logger.error(f"Fatal error: {e}")
-        # Always attempt mail, even if partial
-        try:
-            MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)  # whatever your signature is
-        except Exception as mail_e:
-            error_logger.error(f"Additionally failed to send mail: {mail_e}")
-        raise  # or sys.exit(1)
+
+        # Send error mail only if -s was provided
+        if args.send_mail:
+            try:
+                MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
+            except Exception as mail_e:
+                error_logger.error(f"Additionally failed to send mail: {mail_e}")
+        raise
 
     finally:
+        # If run was successful and user asked for mail on success
+        if (not had_error) and args.send_mail and args.mail_on_success:
+            try:
+                MailToSuccess(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
+            except Exception as mail_e:
+                error_logger.error(f"Failed to send success mail: {mail_e}")
+
         # Check if the .err file is empty, and remove it if it is
         if os.path.exists(err_filepath) and os.path.getsize(err_filepath) == 0:
             os.remove(err_filepath)

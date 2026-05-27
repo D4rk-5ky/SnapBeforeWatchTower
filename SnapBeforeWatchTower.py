@@ -192,12 +192,18 @@ def get_newest_files(log_dir, prefix):
 
 # This is is for the send mail part
 def send_mail(subject, body, recipient, attachment_files=None):
-    mail_command = ['mail', '-s', subject, recipient]
+    # Put all options before the recipient. This is more compatible with mail/mailx variants.
+    mail_command = ['mail', '-s', subject]
 
     if attachment_files:
         for file in attachment_files:
             mail_command.extend(['--attach', file])
-    print("Mail command : ", mail_command)
+
+    mail_command.append(recipient)
+
+    if not body:
+        body = "No mail body was generated. Check attached logs.\n"
+
     process = subprocess.Popen(mail_command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     _, stderr_output = process.communicate(input=body.encode())
 
@@ -207,36 +213,45 @@ def send_mail(subject, body, recipient, attachment_files=None):
 
 # This is for the send mail function
 # In case one needs to be notified of errors
-#
-# FIx and make sure to make it possible to send error message even if .out file is not created yet
-def MailTo(logger, error_logger, recipient, log_folder):
+def MailTo(
+    logger,
+    error_logger,
+    recipient,
+    log_folder,
+    subject="SnapBeforeWatchTower report - logs attached",
+    intro="",
+    prefix="SnapBeforeWatchTower",
+):
     print_separator(logger)
-    logger.info("Mail-on-success is enabled (-mos). Sending success mail.")
+    logger.info("Preparing email report...")
 
-    subject = "SnapBeforeWatchTower completed successfully - attaching latest log"
-    newest_log, newest_err = get_newest_files(log_folder, "SnapBeforeWatchTower")
+    newest_log, newest_err = get_newest_files(log_folder, prefix)
 
     attachment_files = []
-    body = "SnapBeforeWatchTower finished successfully.\n"
+    body = ""
 
-    # Attach latest .log if present
-    if newest_log:
-        attachment_files.append(newest_log)
+    if intro:
+        body += intro.strip() + "\n\n"
 
-        # Include log content in body (optional; you can remove this if you only want attachments)
-        if os.path.isfile(newest_log):
-            with open(newest_log, "r", encoding="utf-8", errors="replace") as f:
-                body += "\n----------\n\n.log file\n" + f.read()
-
-    # Only attach .err if it exists AND is non-empty (success mail shouldn't include empty error logs)
+    # Attach latest .err first if it exists and is non-empty.
     if newest_err and os.path.isfile(newest_err):
         try:
             if os.path.getsize(newest_err) > 0:
                 attachment_files.append(newest_err)
                 with open(newest_err, "r", encoding="utf-8", errors="replace") as f:
-                    body += "\n----------\n\n.err file (non-empty)\n" + f.read()
-        except Exception:
-            pass
+                    body += "\n----------\n\n.err file\n" + f.read()
+        except Exception as e:
+            error_logger.error(f"Could not read err file for mail body: {e}")
+
+    # Attach latest .log if present.
+    if newest_log:
+        attachment_files.append(newest_log)
+        if os.path.isfile(newest_log):
+            with open(newest_log, "r", encoding="utf-8", errors="replace") as f:
+                body += "\n----------\n\n.log file\n" + f.read()
+
+    if not body.strip():
+        body = "No log content was found. Check the script output on the host.\n"
 
     mail_exit_code, stderr_output = send_mail(subject, body, recipient, attachment_files)
 
@@ -562,18 +577,26 @@ def main():
 
         if args.send_mail:
             try:
-                MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
+                MailTo(
+                    logger,
+                    error_logger,
+                    recipient=args.send_mail,
+                    log_folder=log_folder,
+                    subject="SnapBeforeWatchTower FAILED - not run as root",
+                    intro=msg,
+                )
             except Exception as mail_e:
                 error_logger.error(f"Additionally failed to send mail: {mail_e}")
 
         sys.exit(1)
 
-    with open(args.file, "r") as file:
-        datasets = file.read().splitlines()
-
     had_error = False
 
     try:
+        # Read the dataset file inside the try block, so bad paths also trigger error mail.
+        with open(args.file, "r", encoding="utf-8") as file:
+            datasets = [ln.strip() for ln in file.read().splitlines() if ln.strip()]
+
         if args.command == 'create':
             save_docker_image_digests(logger, error_logger, log_folder, log_date, dry_run=dry_run)
 
@@ -622,7 +645,14 @@ def main():
         # Send error mail only if -s was provided
         if args.send_mail:
             try:
-                MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
+                MailTo(
+                    logger,
+                    error_logger,
+                    recipient=args.send_mail,
+                    log_folder=log_folder,
+                    subject="SnapBeforeWatchTower FAILED - logs attached",
+                    intro="SnapBeforeWatchTower failed. See attached logs.",
+                )
             except Exception as mail_e:
                 error_logger.error(f"Additionally failed to send mail: {mail_e}")
         raise
@@ -631,7 +661,14 @@ def main():
         # If run was successful and user asked for mail on success
         if (not had_error) and args.send_mail and args.mail_on_success:
             try:
-                MailTo(logger, error_logger, recipient=args.send_mail, log_folder=log_folder)
+                MailTo(
+                    logger,
+                    error_logger,
+                    recipient=args.send_mail,
+                    log_folder=log_folder,
+                    subject="SnapBeforeWatchTower SUCCESS - logs attached",
+                    intro="SnapBeforeWatchTower completed successfully. Logs attached.",
+                )
             except Exception as mail_e:
                 error_logger.error(f"Failed to send success mail: {mail_e}")
 

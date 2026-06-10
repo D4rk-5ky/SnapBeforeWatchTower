@@ -30,6 +30,7 @@ It supports:
 - Cleaning up old snapshots and log groups
 - Structured logging with automatic fallback
 - Optional email notifications (errors and/or success)
+- Optional backup title and comment metadata in terminal output, logs, and email bodies
 
 The script **must normally be run as root**.
 
@@ -62,6 +63,7 @@ If any mandatory requirement is missing or misconfigured, the script will fail s
 - ✅ Separate `.log`, `.err`, and `.digest` files per run
 - ✅ Dry-run mode (no destructive changes)
 - ✅ Optional email notifications
+- ✅ Optional backup title and comment metadata
 - ✅ Root enforcement with automatic `/tmp` fallback logging
 
 ---
@@ -90,7 +92,7 @@ The dataset file **must exist** and contain **one ZFS dataset per line**.
 
 Example `datasets.txt`:
 
-```
+```text
 tank/data
 tank/docker
 tank/vms
@@ -115,6 +117,20 @@ sudo ./SnapBeforeWatchTower.py \
   --mail-on-success
 ```
 
+### Create snapshots + cleanup with title and comment
+
+```bash
+sudo ./SnapBeforeWatchTower.py \
+  --command create \
+  --file datasets.txt \
+  --older-than 7d \
+  --retain-count 10 \
+  --send-mail you@example.com \
+  --mail-on-success \
+  --backup-title "Before Watchtower update" \
+  --backup-comment "Manual snapshot before Docker containers are updated"
+```
+
 ### Delete snapshots only
 
 ```bash
@@ -137,6 +153,19 @@ sudo ./SnapBeforeWatchTower.py \
   --dry-run
 ```
 
+### Dry-run with title and comment
+
+```bash
+sudo ./SnapBeforeWatchTower.py \
+  --command create \
+  --file datasets.txt \
+  --older-than 7d \
+  --retain-count 10 \
+  --dry-run \
+  --backup-title "Test run" \
+  --backup-comment "Verify what would happen without creating or deleting anything"
+```
+
 ---
 
 ## Command-Line Options
@@ -148,8 +177,54 @@ sudo ./SnapBeforeWatchTower.py \
 | `-o`, `--older-than` | Retention cutoff (`Nd`, `Nw`, `Nm`) |
 | `-r`, `--retain-count` | Always keep this many newest snapshots |
 | `-s`, `--send-mail EMAIL` | Enable email notifications |
-| `-mos`, `--mail-on-success` | Send mail **only on success** (requires `-s`) |
+| `-mos`, `--mail-on-success` | Send mail **also on success** (requires `-s`) |
+| `--backup-title TEXT` | Optional backup title written to terminal output, logs, and the top of email bodies |
+| `--backup-comment TEXT` | Optional backup comment written to terminal output, logs, and the top of email bodies |
 | `-d`, `--dry-run` | Show actions without making changes |
+
+---
+
+## Backup Title and Comment
+
+The optional `--backup-title` and `--backup-comment` fields can be used to describe why the script is being run.
+
+Example:
+
+```bash
+--backup-title "Before Watchtower update"
+--backup-comment "Manual snapshot before Docker containers are updated"
+```
+
+When provided, the title and comment are included in:
+
+- Terminal output
+- The main `.log` file
+- The top of success email bodies
+- The top of error email bodies
+
+Example terminal/log output:
+
+```text
+Backup metadata:
+Title: Before Watchtower update
+Comment: Manual snapshot before Docker containers are updated
+```
+
+Example email body header:
+
+```text
+Title: Before Watchtower update
+Comment: Manual snapshot before Docker containers are updated
+```
+
+The title and comment **do not change the email subject**.
+
+Email subjects still use the normal success/error style, for example:
+
+```text
+SnapBeforeWatchTower SUCCESS - logs attached
+SnapBeforeWatchTower FAILED - logs attached
+```
 
 ---
 
@@ -157,7 +232,7 @@ sudo ./SnapBeforeWatchTower.py \
 
 Only snapshots matching **this exact format** are managed:
 
-```
+```text
 SnapBeforeWatchTower-Date-YYYY-MM-DD_HH_MM_SS
 ```
 
@@ -187,6 +262,8 @@ Each run produces a **log group** sharing the same timestamp:
 - `.err` → errors only (removed if empty)
 - `.digest` → Docker image digests (create mode only)
 
+If `--backup-title` and/or `--backup-comment` are provided, they are written near the start of the terminal output and `.log` file.
+
 ### Log location
 
 - **Root execution** → `./logs/`
@@ -204,6 +281,8 @@ If not run as root:
 ### Error mail (`--send-mail`)
 
 - Sent **only on failure**
+- Subject stays in the normal error format
+- If provided, `--backup-title` and `--backup-comment` are written at the top of the mail body
 - Attaches:
   - Latest `.log`
   - `.err` **only if non-empty**
@@ -211,6 +290,8 @@ If not run as root:
 ### Success mail (`--send-mail --mail-on-success`)
 
 - Sent **only if run completed without errors**
+- Subject stays in the normal success format
+- If provided, `--backup-title` and `--backup-comment` are written at the top of the mail body
 - Attaches:
   - Latest `.log`
   - `.err` **only if non-empty**

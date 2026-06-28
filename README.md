@@ -16,7 +16,7 @@ This script performs **destructive operations**, including but not limited to:
 ⚠️ **Always ensure you have verified backups.**  
 ⚠️ **You are fully responsible for reviewing and understanding the code before running it.**
 
-> ⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
+⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
 
 ## Disclaimer
 

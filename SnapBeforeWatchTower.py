@@ -10,6 +10,9 @@ import glob
 import sys
 from typing import List, Tuple, Optional
 import tempfile
+from mqtt_report import RunReporter, load_config
+
+__version__ = "0.0.3"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -544,14 +547,29 @@ def save_docker_image_digests(
 def main():
     global err_filepath  # Use the global variable
     parser = argparse.ArgumentParser(description='Create or delete snapshots for ZFS datasets.')
+    parser.add_argument('--version', action='version', version=f'SnapBeforeWatchTower {__version__}')
+    parser.add_argument('--mqtt-config', metavar='PATH', help='Path to optional MQTT JSON for one final non-retained status report; username/password are read directly from the JSON; dry-run validates but does not publish')
     parser.add_argument('-c', '--command', choices=['create', 'delete'], required=True, help='Command: create or delete')
     parser.add_argument('-f', '--file', required=True, help='Path to the file containing the dataset names')
     parser.add_argument('-o', '--older-than', type=parse_older_than, required=True, help="Delete snapshots older than 'Nd', 'Nw', or 'Nm' (N=integer)")
-    parser.add_argument('-r', '--retain-count', type=int, required=True, help='Number of snapshots to retain despite being older')
+    parser.add_argument('-r', '--retain-count', type=int, required=True, help='Keep this many newest matching snapshots per dataset and log groups; values <= 0 disable the count floor')
     parser.add_argument('-s', '--send-mail', metavar='EMAIL', help='Send an email notification to the specified email address')
-    parser.add_argument('-mos', '--mail-on-success', action='store_true', help='Send a success email notification to the specified email address')
-    parser.add_argument('-d', '--dry-run', action='store_true', help='Dry run: show what would be done without making changes')
+    parser.add_argument('-mos', '--mail-on-success', action='store_true', help='Also send success mail when --send-mail is set; failure mail remains enabled')
+    parser.add_argument('-d', '--dry-run', action='store_true', help='Preview snapshot and old-log actions; still lists ZFS snapshots, writes run logs, and may send requested mail')
     args = parser.parse_args()
+    mqtt_config = None
+    if args.mqtt_config:
+        try:
+            mqtt_config = load_config(args.mqtt_config, dry_run=args.dry_run)
+        except (OSError, ValueError) as exc:
+            parser.error(f'Cannot load MQTT configuration: {exc}')
+    with RunReporter(mqtt_config, args.command, __version__, dry_run=args.dry_run) as reporter:
+        run(args, reporter)
+
+
+def run(args, reporter):
+    """Execute the original operation flow with an attached final-outcome observer."""
+    global err_filepath
     
     dry_run = args.dry_run
 
@@ -563,6 +581,7 @@ def main():
 
     # Create separate loggers for main logs and error logs
     logger, error_logger, err_filepath = setup_logger(log_folder, log_date)
+    reporter.attach(error_logger)
 
     if dry_run:
         logger.info("========== DRY-RUN MODE ENABLED ==========")

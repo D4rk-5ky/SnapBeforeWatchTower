@@ -1,0 +1,10 @@
+mqtt.json
+!mqtt.example.json
+
+logs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+*.egg-info/

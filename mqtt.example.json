@@ -1,0 +1,14 @@
+{
+  "host": "mqtt.example.local",
+  "port": 1883,
+  "topic": "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status",
+  "title": "Zotac RI531 - SnapBeforeWatchTower",
+  "username": "your-mqtt-user",
+  "password": "<String>",
+  "qos": 0,
+  "tls": false,
+  "ca_file": null,
+  "cert_file": null,
+  "key_file": null,
+  "timeout": 15
+}

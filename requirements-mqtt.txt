@@ -1,0 +1,2 @@
+# Optional: install only when using --mqtt-config.
+paho-mqtt>=2.1,<3

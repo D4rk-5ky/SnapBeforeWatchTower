@@ -1,4 +1,5 @@
-config.toml
+mqtt.json
+!mqtt.example.json
 
 logs/
 __pycache__/

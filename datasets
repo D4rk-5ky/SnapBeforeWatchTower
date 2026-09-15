@@ -23,4 +23,4 @@ Storage/Docker-SyncoidTest/Podcasts
 Storage/Docker-SyncoidTest/VaultWarden
 Storage/Docker-SyncoidTest/Videos
 Storage/Docker-SyncoidTest/WatchTower
-Storage/Docker-SyncoidTest/nginx-proxy-manage
+Storage/Docker-SyncoidTest/nginx-proxy-manager

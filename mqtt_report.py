@@ -22,30 +22,22 @@ DEFAULTS = {
     'key_file': None,
     'timeout': 15,
 }
-SUPPORTED_KEYS = set(DEFAULTS) | {'host', 'topic'}
-OPTIONAL_STRING_KEYS = ['username', 'password', 'ca_file', 'cert_file', 'key_file']
 
 
-def validate_config(supplied, base_dir, dry_run=False, enabled=True):
-    """Validate the TOML [mqtt] settings; disabled MQTT needs no dependency or broker details."""
+def load_config(path, dry_run=False):
+    """Validate explicit MQTT settings before any dataset operation; never log secrets."""
+    with open(path, encoding='utf-8') as handle:
+        supplied = json.load(handle)
     if not isinstance(supplied, dict):
-        raise ValueError('MQTT configuration must be a TOML table')
-    unsupported = set(supplied) - SUPPORTED_KEYS
-    if unsupported:
-        names = ', '.join(sorted(unsupported))
-        raise ValueError(f'MQTT configuration contains unsupported key(s): {names}')
-    if not enabled:
-        return None
-
+        raise ValueError('MQTT config must be a JSON object')
+    if set(supplied) - (set(DEFAULTS) | {'host', 'topic'}):
+        raise ValueError('MQTT config contains unsupported keys; see mqtt.example.json')
     config = dict(DEFAULTS, **supplied)
     for key in ['host', 'topic', 'title']:
         if not isinstance(config.get(key), str) or not config[key].strip() or '\0' in config[key]:
             raise ValueError(f'MQTT {key} must be a nonempty string without NUL')
-        config[key] = config[key].strip()
-
     if any(char in config['topic'] for char in '+#') or len(config['topic'].encode('utf-8')) > 65535:
         raise ValueError('MQTT topic must be a publish topic without wildcards, at most 65535 UTF-8 bytes')
-
     for key, low, high in [('port', 1, 65535), ('qos', 0, 2), ('timeout', 1, 120)]:
         if type(config[key]) is not int or not low <= config[key] <= high:
             raise ValueError(f'MQTT {key} must be an integer from {low} to {high}')
@@ -53,32 +45,21 @@ def validate_config(supplied, base_dir, dry_run=False, enabled=True):
         raise ValueError('MQTT tls must be true or false')
     if config['tls'] and 'port' not in supplied:
         config['port'] = 8883
-
-    for key in OPTIONAL_STRING_KEYS:
-        value = config[key]
-        if value == '':
-            config[key] = None
-            continue
-        if value is not None and (not isinstance(value, str) or not value.strip() or '\0' in value):
-            raise ValueError(f'MQTT {key} must be an empty string or a nonempty string without NUL')
-        if isinstance(config[key], str):
-            config[key] = config[key].strip()
-
+    for key in ['username', 'password', 'ca_file', 'cert_file', 'key_file']:
+        if config[key] is not None and (not isinstance(config[key], str) or not config[key].strip() or '\0' in config[key]):
+            raise ValueError(f'MQTT {key} must be null or a nonempty string without NUL')
     if config['password'] and not config['username']:
         raise ValueError('MQTT password requires username')
     if bool(config['cert_file']) != bool(config['key_file']):
         raise ValueError('MQTT cert_file and key_file must be supplied together')
-
-    base_dir = Path(base_dir).resolve()
     for key in ['ca_file', 'cert_file', 'key_file']:
         if config[key]:
             if not config['tls']:
                 raise ValueError(f'MQTT {key} requires tls=true')
-            resolved = (base_dir / config[key]).resolve()
+            resolved = (Path(path).resolve().parent / config[key]).resolve()
             if not resolved.is_file():
                 raise ValueError(f'MQTT {key} does not point to a file')
             config[key] = str(resolved)
-
     if not dry_run:
         try:
             importlib.import_module('paho.mqtt.publish')
@@ -211,7 +192,7 @@ def worker():
 
 if __name__ == '__main__':
     if sys.argv[1:] != ['--publish']:
-        sys.exit('Internal MQTT worker; use SnapBeforeWatchTower.py -c CONFIG')
+        sys.exit('Internal MQTT worker; use SnapBeforeWatchTower.py --mqtt-config PATH')
     try:
         worker()
     except Exception:

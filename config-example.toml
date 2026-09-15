@@ -1,0 +1,81 @@
+# SnapBeforeWatchTower configuration example.
+# Copy this file to config.toml, edit it, then run:
+#   sudo python3 SnapBeforeWatchTower.py -c config.toml
+# Relative file paths in this TOML are resolved relative to this TOML file.
+
+[application]
+# Operation to perform: "create" creates a snapshot and then applies retention;
+# "delete" only applies retention and does not create snapshots or capture Docker digests.
+command = "create"
+
+# UTF-8 text file containing one ZFS dataset name per non-empty line.
+# Relative paths are resolved relative to this TOML file.
+dataset_file = "datasets"
+
+# Age cutoff for managed snapshots and log groups.
+# Use a nonnegative integer followed by d (days), w (weeks), or m (30-day months).
+# Examples: "7d", "2w", "1m", "0d".
+older_than = "7d"
+
+# Always protect this many newest matching snapshots per dataset and log timestamp groups.
+# Zero or a negative integer disables the count floor; age rules still apply.
+retain_count = 10
+
+# When true, preview ZFS snapshot creation/destruction and old-log deletion.
+# Dry-run still lists ZFS snapshots, writes run logs, and can send configured mail.
+# MQTT configuration is validated, but MQTT publishing is suppressed in dry-run mode.
+dry_run = true
+
+[mail]
+# Optional mail notification feature. Set true to enable failure mail.
+enabled = false
+
+# Recipient passed to the local `mail` command when mail is enabled.
+recipient = "you@example.com"
+
+# When true, also send a success mail. Failure mail remains enabled whenever mail is enabled.
+on_success = false
+
+[mqtt]
+# Optional final MQTT JSON status report. Set true to enable MQTT reporting.
+enabled = false
+
+# MQTT broker hostname or IP address.
+host = "mqtt.example.local"
+
+# MQTT broker TCP port. Use 1883 for normal MQTT or commonly 8883 for MQTT over TLS.
+port = 1883
+
+# Publish topic. Wildcards (+ and #) are not allowed because this is a publish topic.
+topic = "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status"
+
+# Human-readable job name copied into the MQTT payload fields title, name, and job.
+title = "Zotac RI531 - SnapBeforeWatchTower"
+
+# Optional MQTT username. Use an empty string for no username authentication.
+username = "your-mqtt-user"
+
+# Optional plain MQTT password string. It requires a non-empty username when MQTT is enabled.
+# Protect the operational TOML file because this value is stored as plaintext.
+password = "<String>"
+
+# MQTT Quality of Service. Valid values are 0, 1, or 2. Reports are always non-retained.
+qos = 0
+
+# Enable verified TLS. Hostname and certificate verification are not disabled.
+tls = false
+
+# Optional CA bundle path for TLS. Use an empty string to use system trusted CAs.
+# Relative paths are resolved relative to this TOML file.
+ca_file = ""
+
+# Optional client certificate path for mutual TLS. Must be used together with key_file.
+# Relative paths are resolved relative to this TOML file.
+cert_file = ""
+
+# Optional client private-key path for mutual TLS. Must be used together with cert_file.
+# Relative paths are resolved relative to this TOML file.
+key_file = ""
+
+# Total MQTT worker timeout in seconds. Valid integer range: 1 through 120.
+timeout = 15

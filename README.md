@@ -12,11 +12,9 @@ SnapBeforeWatchTower creates ZFS snapshots for a list of datasets, records Docke
 
 Extract the full project, enter its directory, and use `python3 SnapBeforeWatchTower.py`. Normal operations, including dry-run, require root. Help and version do not require root or ZFS.
 
-⚠️ **Always test on a non-production system first.**  
-⚠️ **Always ensure you have verified backups.**  
-⚠️ **You are fully responsible for reviewing and understanding the code before running it.**
+## Setup
 
-⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
+Copy the example configuration and edit it:
 
 ## Disclaimer
 
@@ -188,5 +186,4 @@ Log cleanup groups `.log`, `.err`, and `.digest` by embedded timestamp and appli
 
 Parser/configuration errors return status 2. Help/version and normal completion return 0; non-root execution and uncaught operational errors return a nonzero status. An exception stops subsequent operations without rollback. Review `.err` as well as the exit code: a Docker command returning nonzero, digest-write failure, log-deletion failure, mail failure, or MQTT delivery failure can be logged without making the overall run fail. In particular, Docker returning nonzero does not prevent snapshot creation or retention; a missing Docker executable raises an exception and stops the operation.
 
-No license is implied unless explicitly added.  
-Use, modify, and run this script **entirely at your own risk**.
+This program performs destructive ZFS snapshot deletion and log deletion. Review `SAFETY.md`, start with `dry_run = true`, verify the resulting plan/logs, and keep independent backups before using real deletion.

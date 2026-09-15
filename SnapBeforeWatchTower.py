@@ -281,7 +281,7 @@ def parse_older_than(value):
     pattern = r'^(\d+)([dwm])$'
     match = re.match(pattern, value)
     if not match:
-        raise argparse.ArgumentTypeError("Invalid value for --older-than. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
+        raise argparse.ArgumentTypeError("Invalid retention age. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
 
     num = int(match.group(1))
     unit = match.group(2)
@@ -293,7 +293,7 @@ def parse_older_than(value):
     elif unit == 'm':
         return datetime.timedelta(days=num * 30)  # Calculate based on 30 days per month
     else:
-        raise argparse.ArgumentTypeError("Invalid value for --older-than. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
+        raise argparse.ArgumentTypeError("Invalid retention age. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
 
 def create_snapshot(logger, error_logger, dataset, dry_run=False):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
@@ -542,6 +542,112 @@ def save_docker_image_digests(
     except Exception as e:
         error_logger.error(f"Failed to write digest file {filepath}: {e}")
         return None
+
+
+def load_app_config(path):
+    """Load and validate the single TOML configuration file used by the application."""
+    config_path = Path(path).expanduser().resolve()
+    with config_path.open('rb') as handle:
+        document = tomllib.load(handle)
+    if not isinstance(document, dict):
+        raise ValueError('configuration root must be a TOML table')
+
+    supported_sections = {'application', 'mail', 'mqtt'}
+    unknown_sections = set(document) - supported_sections
+    if unknown_sections:
+        names = ', '.join(sorted(unknown_sections))
+        raise ValueError(f'unsupported configuration section(s): {names}')
+
+    application = document.get('application')
+    if not isinstance(application, dict):
+        raise ValueError('missing required [application] table')
+    app_keys = {'command', 'dataset_file', 'older_than', 'retain_count', 'dry_run'}
+    unknown_app = set(application) - app_keys
+    if unknown_app:
+        names = ', '.join(sorted(unknown_app))
+        raise ValueError(f'[application] contains unsupported key(s): {names}')
+    missing_app = app_keys - set(application)
+    if missing_app:
+        names = ', '.join(sorted(missing_app))
+        raise ValueError(f'[application] is missing required key(s): {names}')
+
+    command = application['command']
+    if command not in {'create', 'delete'}:
+        raise ValueError('[application].command must be "create" or "delete"')
+
+    dataset_file = application['dataset_file']
+    if not isinstance(dataset_file, str) or not dataset_file.strip() or '\0' in dataset_file:
+        raise ValueError('[application].dataset_file must be a nonempty string without NUL')
+    dataset_path = Path(dataset_file.strip()).expanduser()
+    if not dataset_path.is_absolute():
+        dataset_path = config_path.parent / dataset_path
+    dataset_path = dataset_path.resolve()
+
+    older_than_raw = application['older_than']
+    if not isinstance(older_than_raw, str):
+        raise ValueError('[application].older_than must be a string such as "7d", "2w", or "1m"')
+    try:
+        older_than = parse_older_than(older_than_raw.strip())
+    except argparse.ArgumentTypeError as exc:
+        raise ValueError(f'[application].older_than: {exc}') from exc
+
+    retain_count = application['retain_count']
+    if type(retain_count) is not int:
+        raise ValueError('[application].retain_count must be an integer')
+    dry_run = application['dry_run']
+    if type(dry_run) is not bool:
+        raise ValueError('[application].dry_run must be true or false')
+
+    mail = document.get('mail', {})
+    if not isinstance(mail, dict):
+        raise ValueError('[mail] must be a TOML table')
+    mail_keys = {'enabled', 'recipient', 'on_success'}
+    unknown_mail = set(mail) - mail_keys
+    if unknown_mail:
+        names = ', '.join(sorted(unknown_mail))
+        raise ValueError(f'[mail] contains unsupported key(s): {names}')
+    mail_enabled = mail.get('enabled', False)
+    if type(mail_enabled) is not bool:
+        raise ValueError('[mail].enabled must be true or false')
+    mail_on_success = mail.get('on_success', False)
+    if type(mail_on_success) is not bool:
+        raise ValueError('[mail].on_success must be true or false')
+    recipient = mail.get('recipient', '')
+    if not isinstance(recipient, str) or '\0' in recipient:
+        raise ValueError('[mail].recipient must be a string without NUL')
+    recipient = recipient.strip()
+    if mail_enabled and not recipient:
+        raise ValueError('[mail].recipient must be set when [mail].enabled=true')
+    if not mail_enabled:
+        recipient = None
+        mail_on_success = False
+
+    mqtt = document.get('mqtt', {})
+    if not isinstance(mqtt, dict):
+        raise ValueError('[mqtt] must be a TOML table')
+    mqtt_enabled = mqtt.get('enabled', False)
+    if type(mqtt_enabled) is not bool:
+        raise ValueError('[mqtt].enabled must be true or false')
+    mqtt_values = dict(mqtt)
+    mqtt_values.pop('enabled', None)
+    mqtt_config = validate_mqtt_config(
+        mqtt_values,
+        base_dir=config_path.parent,
+        dry_run=dry_run,
+        enabled=mqtt_enabled,
+    )
+
+    args = argparse.Namespace(
+        command=command,
+        file=str(dataset_path),
+        older_than=older_than,
+        retain_count=retain_count,
+        send_mail=recipient,
+        mail_on_success=mail_on_success,
+        dry_run=dry_run,
+        config_path=str(config_path),
+    )
+    return args, mqtt_config
 
 
 def main():

@@ -10,9 +10,11 @@ import glob
 import sys
 from typing import List, Tuple, Optional
 import tempfile
-from mqtt_report import RunReporter, load_config
+import tomllib
+from pathlib import Path
+from mqtt_report import RunReporter, validate_config as validate_mqtt_config
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -281,7 +283,7 @@ def parse_older_than(value):
     pattern = r'^(\d+)([dwm])$'
     match = re.match(pattern, value)
     if not match:
-        raise argparse.ArgumentTypeError("Invalid value for --older-than. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
+        raise argparse.ArgumentTypeError("Invalid retention age. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
 
     num = int(match.group(1))
     unit = match.group(2)
@@ -293,7 +295,7 @@ def parse_older_than(value):
     elif unit == 'm':
         return datetime.timedelta(days=num * 30)  # Calculate based on 30 days per month
     else:
-        raise argparse.ArgumentTypeError("Invalid value for --older-than. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
+        raise argparse.ArgumentTypeError("Invalid retention age. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
 
 def create_snapshot(logger, error_logger, dataset, dry_run=False):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
@@ -544,25 +546,124 @@ def save_docker_image_digests(
         return None
 
 
+def load_app_config(path):
+    """Load and validate the single TOML configuration file used by the application."""
+    config_path = Path(path).expanduser().resolve()
+    with config_path.open('rb') as handle:
+        document = tomllib.load(handle)
+    if not isinstance(document, dict):
+        raise ValueError('configuration root must be a TOML table')
+
+    supported_sections = {'application', 'mail', 'mqtt'}
+    unknown_sections = set(document) - supported_sections
+    if unknown_sections:
+        names = ', '.join(sorted(unknown_sections))
+        raise ValueError(f'unsupported configuration section(s): {names}')
+
+    application = document.get('application')
+    if not isinstance(application, dict):
+        raise ValueError('missing required [application] table')
+    app_keys = {'command', 'dataset_file', 'older_than', 'retain_count', 'dry_run'}
+    unknown_app = set(application) - app_keys
+    if unknown_app:
+        names = ', '.join(sorted(unknown_app))
+        raise ValueError(f'[application] contains unsupported key(s): {names}')
+    missing_app = app_keys - set(application)
+    if missing_app:
+        names = ', '.join(sorted(missing_app))
+        raise ValueError(f'[application] is missing required key(s): {names}')
+
+    command = application['command']
+    if command not in {'create', 'delete'}:
+        raise ValueError('[application].command must be "create" or "delete"')
+
+    dataset_file = application['dataset_file']
+    if not isinstance(dataset_file, str) or not dataset_file.strip() or '\0' in dataset_file:
+        raise ValueError('[application].dataset_file must be a nonempty string without NUL')
+    dataset_path = Path(dataset_file.strip()).expanduser()
+    if not dataset_path.is_absolute():
+        dataset_path = config_path.parent / dataset_path
+    dataset_path = dataset_path.resolve()
+
+    older_than_raw = application['older_than']
+    if not isinstance(older_than_raw, str):
+        raise ValueError('[application].older_than must be a string such as "7d", "2w", or "1m"')
+    try:
+        older_than = parse_older_than(older_than_raw.strip())
+    except argparse.ArgumentTypeError as exc:
+        raise ValueError(f'[application].older_than: {exc}') from exc
+
+    retain_count = application['retain_count']
+    if type(retain_count) is not int:
+        raise ValueError('[application].retain_count must be an integer')
+    dry_run = application['dry_run']
+    if type(dry_run) is not bool:
+        raise ValueError('[application].dry_run must be true or false')
+
+    mail = document.get('mail', {})
+    if not isinstance(mail, dict):
+        raise ValueError('[mail] must be a TOML table')
+    mail_keys = {'enabled', 'recipient', 'on_success'}
+    unknown_mail = set(mail) - mail_keys
+    if unknown_mail:
+        names = ', '.join(sorted(unknown_mail))
+        raise ValueError(f'[mail] contains unsupported key(s): {names}')
+    mail_enabled = mail.get('enabled', False)
+    if type(mail_enabled) is not bool:
+        raise ValueError('[mail].enabled must be true or false')
+    mail_on_success = mail.get('on_success', False)
+    if type(mail_on_success) is not bool:
+        raise ValueError('[mail].on_success must be true or false')
+    recipient = mail.get('recipient', '')
+    if not isinstance(recipient, str) or '\0' in recipient:
+        raise ValueError('[mail].recipient must be a string without NUL')
+    recipient = recipient.strip()
+    if mail_enabled and not recipient:
+        raise ValueError('[mail].recipient must be set when [mail].enabled=true')
+    if not mail_enabled:
+        recipient = None
+        mail_on_success = False
+
+    mqtt = document.get('mqtt', {})
+    if not isinstance(mqtt, dict):
+        raise ValueError('[mqtt] must be a TOML table')
+    mqtt_enabled = mqtt.get('enabled', False)
+    if type(mqtt_enabled) is not bool:
+        raise ValueError('[mqtt].enabled must be true or false')
+    mqtt_values = dict(mqtt)
+    mqtt_values.pop('enabled', None)
+    mqtt_config = validate_mqtt_config(
+        mqtt_values,
+        base_dir=config_path.parent,
+        dry_run=dry_run,
+        enabled=mqtt_enabled,
+    )
+
+    args = argparse.Namespace(
+        command=command,
+        file=str(dataset_path),
+        older_than=older_than,
+        retain_count=retain_count,
+        send_mail=recipient,
+        mail_on_success=mail_on_success,
+        dry_run=dry_run,
+        config_path=str(config_path),
+    )
+    return args, mqtt_config
+
+
 def main():
-    global err_filepath  # Use the global variable
-    parser = argparse.ArgumentParser(description='Create or delete snapshots for ZFS datasets.')
-    parser.add_argument('--version', action='version', version=f'SnapBeforeWatchTower {__version__}')
-    parser.add_argument('--mqtt-config', metavar='PATH', help='Path to optional MQTT JSON for one final non-retained status report; username/password are read directly from the JSON; dry-run validates but does not publish')
-    parser.add_argument('-c', '--command', choices=['create', 'delete'], required=True, help='Command: create or delete')
-    parser.add_argument('-f', '--file', required=True, help='Path to the file containing the dataset names')
-    parser.add_argument('-o', '--older-than', type=parse_older_than, required=True, help="Delete snapshots older than 'Nd', 'Nw', or 'Nm' (N=integer)")
-    parser.add_argument('-r', '--retain-count', type=int, required=True, help='Keep this many newest matching snapshots per dataset and log groups; values <= 0 disable the count floor')
-    parser.add_argument('-s', '--send-mail', metavar='EMAIL', help='Send an email notification to the specified email address')
-    parser.add_argument('-mos', '--mail-on-success', action='store_true', help='Also send success mail when --send-mail is set; failure mail remains enabled')
-    parser.add_argument('-d', '--dry-run', action='store_true', help='Preview snapshot and old-log actions; still lists ZFS snapshots, writes run logs, and may send requested mail')
-    args = parser.parse_args()
-    mqtt_config = None
-    if args.mqtt_config:
-        try:
-            mqtt_config = load_config(args.mqtt_config, dry_run=args.dry_run)
-        except (OSError, ValueError) as exc:
-            parser.error(f'Cannot load MQTT configuration: {exc}')
+    parser = argparse.ArgumentParser(
+        add_help=False,
+        usage='%(prog)s -c CONFIG',
+        description='Run SnapBeforeWatchTower using one TOML configuration file.',
+    )
+    parser.add_argument('-c', metavar='CONFIG', required=True, help='Path to the TOML configuration file')
+    cli = parser.parse_args()
+    try:
+        args, mqtt_config = load_app_config(cli.c)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        parser.error(f'Cannot load configuration: {exc}')
     with RunReporter(mqtt_config, args.command, __version__, dry_run=args.dry_run) as reporter:
         run(args, reporter)
 

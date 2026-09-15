@@ -3,7 +3,6 @@ import argparse
 from contextlib import contextmanager
 import datetime as dt
 import importlib.util
-import logging
 from pathlib import Path
 import subprocess
 import sys
@@ -21,15 +20,38 @@ SPEC.loader.exec_module(app)
 
 @contextmanager
 def temporary_directory():
-    """Use ordinary directory permissions for portable Windows sandbox test files."""
+    """Use ordinary directory permissions for portable sandbox test files."""
     folder = Path(tempfile.gettempdir()).resolve() / ('snap-test-' + uuid.uuid4().hex)
     folder.mkdir(mode=0o755)
     try:
         yield str(folder)
     finally:
         for child in folder.iterdir():
-            child.unlink()
+            if child.is_dir():
+                for nested in child.iterdir():
+                    nested.unlink()
+                child.rmdir()
+            else:
+                child.unlink()
         folder.rmdir()
+
+
+def write_config(folder, *, command='create', dataset_file='datasets.txt', older_than='7d', retain_count=10,
+                 dry_run=False, mail='', mqtt=''):
+    """Write a minimal TOML config used by parser/integration tests."""
+    path = Path(folder) / 'config.toml'
+    path.write_text(
+        '[application]\n'
+        f'command = "{command}"\n'
+        f'dataset_file = "{dataset_file}"\n'
+        f'older_than = "{older_than}"\n'
+        f'retain_count = {retain_count}\n'
+        f'dry_run = {str(dry_run).lower()}\n'
+        f'{mail}'
+        f'{mqtt}',
+        encoding='utf-8',
+    )
+    return path
 
 
 class BehaviorTests(unittest.TestCase):
@@ -45,6 +67,50 @@ class BehaviorTests(unittest.TestCase):
         for value in ['-1d', '1.5d', '7D', '7', 'garbage']:
             with self.assertRaises(argparse.ArgumentTypeError):
                 app.parse_older_than(value)
+
+    def test_toml_config_maps_former_flags_and_resolves_relative_dataset(self):
+        with temporary_directory() as folder:
+            config = write_config(
+                folder,
+                mail='\n[mail]\nenabled = true\nrecipient = "test@example.com"\non_success = true\n',
+                mqtt='\n[mqtt]\nenabled = true\nhost = "broker"\ntopic = "test/status"\nusername = "user"\npassword = "secret"\n',
+                dry_run=True,
+            )
+            args, mqtt_config = app.load_app_config(config)
+        self.assertEqual(args.command, 'create')
+        self.assertEqual(args.file, str((Path(folder) / 'datasets.txt').resolve()))
+        self.assertEqual(args.older_than, dt.timedelta(days=7))
+        self.assertEqual(args.retain_count, 10)
+        self.assertTrue(args.dry_run)
+        self.assertEqual(args.send_mail, 'test@example.com')
+        self.assertTrue(args.mail_on_success)
+        self.assertEqual(mqtt_config['password'], 'secret')
+
+    def test_toml_optional_sections_default_disabled(self):
+        with temporary_directory() as folder:
+            config = write_config(folder)
+            args, mqtt_config = app.load_app_config(config)
+        self.assertIsNone(args.send_mail)
+        self.assertFalse(args.mail_on_success)
+        self.assertIsNone(mqtt_config)
+
+    def test_toml_invalid_values_and_old_flag_keys_are_rejected(self):
+        invalid_documents = [
+            '[application]\ncommand="bad"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="bad"\nretain_count=10\ndry_run=true\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=true\ndry_run=true\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run="true"\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\nfile="old-flag"\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\n\n[mail]\nenabled=true\nrecipient=""\non_success=false\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\n\n[mqtt]\nenabled=false\npassword_env="OLD"\n',
+            '[unknown]\nvalue=1\n',
+        ]
+        with temporary_directory() as folder:
+            path = Path(folder) / 'bad.toml'
+            for text in invalid_documents:
+                path.write_text(text, encoding='utf-8')
+                with self.subTest(text=text), self.assertRaises(ValueError):
+                    app.load_app_config(path)
 
     def test_retention_preserves_newest_and_ignores_unmanaged_or_invalid_dates(self):
         names = [
@@ -117,13 +183,15 @@ class BehaviorTests(unittest.TestCase):
             self.err.error.assert_called()
 
     def test_nonroot_refuses_before_dataset_or_external_commands(self):
-        args = ['app', '-c', 'create', '-f', 'does-not-exist', '-o', '7d', '-r', '10', '-d']
-        with patch.object(sys, 'argv', args), patch.object(app.os, 'geteuid', return_value=1000, create=True), \
-             patch.object(app, 'pick_log_folder', return_value='mock-logs'), \
-             patch.object(app, 'setup_logger', return_value=(self.log, self.err, 'unused.err')), \
-             patch.object(app.subprocess, 'run') as run, patch.object(app.subprocess, 'Popen') as popen:
-            with self.assertRaises(SystemExit) as failure:
-                app.main()
+        with temporary_directory() as folder:
+            config = write_config(folder, dataset_file='does-not-exist', dry_run=True)
+            with patch.object(sys, 'argv', ['app', '-c', str(config)]), \
+                 patch.object(app.os, 'geteuid', return_value=1000, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value='mock-logs'), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, 'unused.err')), \
+                 patch.object(app.subprocess, 'run') as run, patch.object(app.subprocess, 'Popen') as popen:
+                with self.assertRaises(SystemExit) as failure:
+                    app.main()
         self.assertEqual(failure.exception.code, 1)
         run.assert_not_called()
         popen.assert_not_called()
@@ -132,10 +200,11 @@ class BehaviorTests(unittest.TestCase):
         with temporary_directory() as folder:
             datasets = Path(folder) / 'datasets.txt'
             datasets.write_text('tank/data\n\n tank/other \n')
+            config = write_config(folder)
             events = Mock()
             events.capture.return_value = None
-            args = ['app', '-c', 'create', '-f', str(datasets), '-o', '7d', '-r', '10']
-            with patch.object(sys, 'argv', args), patch.object(app.os, 'geteuid', return_value=0, create=True), \
+            with patch.object(sys, 'argv', ['app', '-c', str(config)]), \
+                 patch.object(app.os, 'geteuid', return_value=0, create=True), \
                  patch.object(app, 'pick_log_folder', return_value=folder), \
                  patch.object(app, 'setup_logger', return_value=(self.log, self.err, str(Path(folder) / 'unused.err'))), \
                  patch.object(app, 'save_docker_image_digests', events.capture), \
@@ -155,26 +224,20 @@ class BehaviorTests(unittest.TestCase):
 
 
 class CLITests(unittest.TestCase):
-    """Run real parser-only subprocesses; no operation gets past argument parsing."""
+    """Verify that -c CONFIG is the only public command-line option."""
 
     def run_cli(self, *args):
         return subprocess.run([sys.executable, '-B', str(ROOT / 'SnapBeforeWatchTower.py'), *args], capture_output=True, text=True)
 
-    def test_help_and_version(self):
-        result = self.run_cli('--help')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for option in ['--version', '--mqtt-config', '--command', '--file', '--older-than', '--retain-count', '--send-mail', '--mail-on-success', '--dry-run']:
-            self.assertIn(option, result.stdout)
-        result = self.run_cli('--version')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower 0.0.3')
-
-    def test_invalid_arguments_stop_before_operations(self):
-        base = ['-c', 'create', '-f', 'unused', '-o', '7d', '-r', '10']
-        for args in [[], ['-c', 'unknown'], base + ['--unknown'], base + ['-o', 'bad'], base + ['-r', 'bad']]:
+    def test_only_config_flag_is_accepted(self):
+        for args in [[], ['-h'], ['--version'], ['--config', 'x.toml'], ['-f', 'datasets'], ['-c', 'x.toml', '--dry-run']]:
             result = self.run_cli(*args)
-            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.returncode, 2, (args, result.stdout, result.stderr))
             self.assertNotIn('Traceback', result.stderr)
+        missing = self.run_cli('-c', 'does-not-exist.toml')
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn('Cannot load configuration', missing.stderr)
+        self.assertIn('-c CONFIG', missing.stderr)
 
 
 if __name__ == '__main__':

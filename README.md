@@ -12,10 +12,25 @@ SnapBeforeWatchTower creates ZFS snapshots for a list of datasets, records Docke
 
 Extract the full project, enter its directory, and use `python3 SnapBeforeWatchTower.py`. Normal operations, including dry-run, require root. Help and version do not require root or ZFS.
 
-```bash
-python3 SnapBeforeWatchTower.py --help
-python3 SnapBeforeWatchTower.py --version
-```
+⚠️ **Always test on a non-production system first.**  
+⚠️ **Always ensure you have verified backups.**  
+⚠️ **You are fully responsible for reviewing and understanding the code before running it.**
+
+⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
+
+## Disclaimer
+
+This project is AI-assisted / vibe-coded software created as a hobby project. It has not been professionally audited and may contain bugs, unsafe behavior, data-loss issues, security problems, or incorrect assumptions.
+
+You are responsible for reviewing the code, testing it in a safe environment, making backups, and understanding what it does before using it on real data. The author is not responsible for damage, data loss, broken systems, security issues, or other problems caused by using this software.
+
+## Data Loss Warning
+
+This application can perform destructive operations, including deleting ZFS snapshots, and backup data. Always test with dry-runs first, check the generated plans, and keep a separate working backup.
+
+---
+
+## Overview
 
 These display all CLI options and the installed application version, respectively.
 
@@ -173,4 +188,5 @@ Log cleanup groups `.log`, `.err`, and `.digest` by embedded timestamp and appli
 
 Parser/configuration errors return status 2. Help/version and normal completion return 0; non-root execution and uncaught operational errors return a nonzero status. An exception stops subsequent operations without rollback. Review `.err` as well as the exit code: a Docker command returning nonzero, digest-write failure, log-deletion failure, mail failure, or MQTT delivery failure can be logged without making the overall run fail. In particular, Docker returning nonzero does not prevent snapshot creation or retention; a missing Docker executable raises an exception and stops the operation.
 
-Use a separate backup and test retention on disposable datasets first. Avoid overlapping runs: there is no lock and names use second precision. No automatic container quiescing or Watchtower scheduling is provided. Original author notices are retained in [SAFETY.md](SAFETY.md).
+No license is implied unless explicitly added.  
+Use, modify, and run this script **entirely at your own risk**.

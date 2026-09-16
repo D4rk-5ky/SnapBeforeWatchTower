@@ -1,4 +1,12 @@
-config.toml
+config*
+
+! datasets.example.txt
+
+datasets
+
+full-snaplist
+
+snaplist*
 
 logs/
 __pycache__/

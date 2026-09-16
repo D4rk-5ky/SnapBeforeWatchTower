@@ -1,8 +1,40 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version; `--version` prints it.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. Version 0.0.4 removes the public `--version` flag because `-c CONFIG` is now the only public CLI option.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.4 — 2026-09-15
+
+### Application code changes (complete)
+
+- Bump the application version from 0.0.3 to 0.0.4.
+- Replace the multi-flag runtime interface with one TOML configuration file. The only public application CLI option is now `-c CONFIG`.
+- Remove public `--version`, `--mqtt-config`, `--command`, `--file`, `--older-than`, `--retain-count`, `--send-mail`, `--mail-on-success`, `--dry-run`, and the automatic `-h/--help` option so operational settings cannot be split between CLI and TOML.
+- Add `load_app_config()` using Python 3.11+ standard-library `tomllib`. It validates the exact `[application]`, optional `[mail]`, and optional `[mqtt]` tables and rejects unsupported/legacy keys.
+- Map TOML application values into the existing runtime attributes so the original ZFS snapshot creation/deletion, retention, Docker digest, logging, mail, root-check, and operation-order code can be reused unchanged.
+- Reuse the existing `parse_older_than()` function for TOML `older_than` validation instead of creating a second retention-duration parser.
+- Resolve `dataset_file` relative to the TOML file, making scheduled execution independent of the process working directory.
+- Move mail settings into optional `[mail]` with explicit `enabled`, `recipient`, and `on_success`. Disabled mail maps to the original no-recipient behavior.
+- Change `mqtt_report.load_config()` into `validate_config()` for TOML-sourced values. MQTT retains direct plain-string `password`, QoS, verified TLS, certificate, timeout, non-retained publish, sanitized error, and child-process behavior.
+- Add explicit `[mqtt].enabled`. Disabled MQTT requires no broker fields/Paho dependency, while unsupported MQTT keys are still rejected.
+- Normalize TOML empty strings for optional MQTT username/password/certificate fields to `None`, because TOML has no JSON-style `null` literal.
+- Resolve MQTT CA/client certificate/key paths relative to the TOML file.
+- Preserve dry-run MQTT suppression and validate enabled MQTT settings without requiring Paho during dry-run.
+- Update the private `mqtt_report.py --publish` worker error text to point users to `SnapBeforeWatchTower.py -c CONFIG`; `--publish` remains internal-only and is not a public app flag.
+- No ZFS retention selection rules, snapshot naming, Docker failure semantics, mail command behavior, root enforcement, MQTT payload schema, MQTT retain/QoS semantics, or destructive-operation safety behavior changed.
+
+### Configuration, documentation, tests, and packaging
+
+- Add `config-example.toml` as the single complete configuration example. Every setting has inline comments explaining purpose, valid values, defaults/behavior, relative-path rules, and security implications.
+- Include all former `mqtt.json` settings directly in `[mqtt]`, including the requested plain `password = "<String>"`, and include mail as an optional TOML feature.
+- Set the example to `dry_run = true`, `[mail].enabled = false`, and `[mqtt].enabled = false` for a safer first run.
+- Remove obsolete `config.example.md`, `mqtt.example.json`, and operational `mqtt.json`, because the application no longer reads those formats/files.
+- Update `.gitignore` to ignore `config.toml`, the expected private operational TOML that may contain an MQTT password.
+- Rewrite README.md for current TOML-only usage, the single `-c CONFIG` invocation, every TOML setting, dataset format, retention behavior, external commands, optional mail/MQTT, logging, and safety. No old-version history is kept in README.
+- Rewrite `commented_code_map.md` to cover every application/test function/class and every external/private command, including why each exists and which original helpers remain preserved but unused.
+- Update regression tests for TOML loading, relative paths, optional section defaults, legacy-key rejection, direct MQTT password handling, TLS paths, and the single-public-flag parser boundary while retaining the original retention/dry-run/root/order/mail tests.
+- Refresh VERIFICATION.md after compile, TOML parse, CLI-boundary, documentation-coverage, regression, manifest, clean-package, and fresh-ZIP checks.
 
 ## 0.0.3 — 2026-09-15
 

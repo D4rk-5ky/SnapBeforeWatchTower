@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 from mqtt_report import RunReporter, validate_config as validate_mqtt_config
 
-__version__ = "0.0.4"
+__version__ = "0.0.6"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -150,6 +150,39 @@ class CommandError(RuntimeError):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+class MissingDatasetsError(RuntimeError):
+    """Final run failure raised after all remaining datasets were processed."""
+
+    def __init__(self, datasets):
+        self.datasets = tuple(datasets)
+        label = "dataset" if len(self.datasets) == 1 else "datasets"
+        names = ", ".join(self.datasets)
+        super().__init__(f"Missing ZFS {label} (dataset does not exist): {names}")
+
+
+def is_missing_dataset_error(exc):
+    """Return True only for command failures whose ZFS stderr says the dataset is absent."""
+    stderr = getattr(exc, "stderr", "") or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    lowered = stderr.lower()
+    return "dataset does not exist" in lowered or "no such pool or dataset" in lowered
+
+
+def remember_missing_dataset(error_logger, missing_datasets, dataset, exc):
+    """Record a known missing-dataset failure and tell the caller whether it may continue."""
+    if not is_missing_dataset_error(exc):
+        return False
+    if dataset not in missing_datasets:
+        missing_datasets.append(dataset)
+    error_logger.error(
+        f"Missing ZFS dataset: {dataset}. ZFS reported that the dataset does not exist; "
+        "continuing with the remaining datasets."
+    )
+    return True
+
 
 def run_cmd(cmd, logger=None, error_logger=None, check=True, dry_run=False):
     """
@@ -711,6 +744,7 @@ def run(args, reporter):
         sys.exit(1)
 
     had_error = False
+    missing_datasets = []
 
     try:
         # Read the dataset file inside the try block, so bad paths also trigger error mail.
@@ -727,15 +761,23 @@ def run(args, reporter):
 
                 print_separator(logger)
 
-                create_snapshot(logger, error_logger, dataset, dry_run=dry_run)
+                try:
+                    create_snapshot(logger, error_logger, dataset, dry_run=dry_run)
 
-                # 🔹 NEW: spacing between create and stats
-                logger.info("")
+                    # 🔹 NEW: spacing between create and stats
+                    logger.info("")
 
-                delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
+                    delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
+                except (subprocess.CalledProcessError, CommandError) as exc:
+                    if remember_missing_dataset(error_logger, missing_datasets, dataset, exc):
+                        continue
+                    raise
 
             print_separator(logger)
-            logger.info("Snapshot creation completed.")
+            if missing_datasets:
+                logger.info("Snapshot creation processing completed; missing datasets were skipped and recorded as a final failure.")
+            else:
+                logger.info("Snapshot creation completed.")
 
             delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run)
 
@@ -746,23 +788,55 @@ def run(args, reporter):
             print_separator(logger)
 
             for dataset in datasets:
-                delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
+                try:
+                    delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
+                except CommandError as exc:
+                    if remember_missing_dataset(error_logger, missing_datasets, dataset, exc):
+                        print_separator(logger)
+                        continue
+                    raise
                 # 🔹 NEW: spacing between create and stats
                 print_separator(logger)
-            
-            
-            logger.info("Snapshot deletion completed.")
+
+
+            if missing_datasets:
+                logger.info("Snapshot deletion processing completed; missing datasets were skipped and recorded as a final failure.")
+            else:
+                logger.info("Snapshot deletion completed.")
 
             print_separator(logger)
 
             delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run)
 
+        if missing_datasets:
+            raise MissingDatasetsError(missing_datasets)
+
+    except MissingDatasetsError as e:
+        had_error = True
+        error_logger.error(f"Run failed because one or more configured datasets are missing: {e}")
+
+        if args.send_mail:
+            try:
+                MailTo(
+                    logger,
+                    error_logger,
+                    recipient=args.send_mail,
+                    log_folder=log_folder,
+                    subject="SnapBeforeWatchTower FAILED - missing dataset",
+                    intro=(
+                        "SnapBeforeWatchTower processed the remaining configured datasets, but the run "
+                        f"failed because one or more ZFS datasets do not exist. {e}"
+                    ),
+                )
+            except Exception as mail_e:
+                error_logger.error(f"Additionally failed to send mail: {mail_e}")
+        raise
 
     except Exception as e:
         had_error = True
         error_logger.error(f"Fatal error: {e}")
 
-        # Send error mail only if -s was provided
+        # Send error mail when mail is enabled.
         if args.send_mail:
             try:
                 MailTo(

@@ -79,7 +79,7 @@ class MQTTTests(unittest.TestCase):
             (SystemExit(1), 'Must run as root', 'failure', 1, False),
             (KeyboardInterrupt(), '', 'failure', 130, False),
         ]:
-            payload = mqtt.build_payload(self.config, 'create', '0.0.4', exc, errors, 'run-123')
+            payload = mqtt.build_payload(self.config, 'create', '0.0.6', exc, errors, 'run-123')
             self.assertEqual((payload['status'], payload['exit_code'], payload['warning']), (status, code, warning))
             for key in ['title', 'name', 'job', 'error', 'stderr', 'run_id', 'finished_at']:
                 self.assertIsInstance(payload[key], str)
@@ -87,6 +87,17 @@ class MQTTTests(unittest.TestCase):
             self.assertEqual(payload['title'], self.config['title'])
             if status == 'failure':
                 self.assertTrue(payload['error'])
+
+    def test_missing_dataset_failure_keeps_existing_failure_contract_and_reason(self):
+        exc = app.MissingDatasetsError(['tank/missing', 'tank/also-missing'])
+        payload = mqtt.build_payload(self.config, 'create', '0.0.6', exc, 'missing dataset detail', 'run-missing')
+        self.assertEqual(payload['status'], 'failure')
+        self.assertEqual(payload['exit_code'], 1)
+        self.assertFalse(payload['warning'])
+        self.assertIn('dataset does not exist', payload['error'])
+        self.assertIn('tank/missing', payload['error'])
+        self.assertIn('tank/also-missing', payload['error'])
+        self.assertIn('missing dataset detail', payload['stderr'])
 
     def test_capture_is_bounded_and_ignores_separators(self):
         capture = mqtt.ErrorCapture()
@@ -101,7 +112,7 @@ class MQTTTests(unittest.TestCase):
         package = types.ModuleType('paho.mqtt')
         package.publish = publish
         config = dict(self.config, username='user', password='secret', tls=True)
-        payload = mqtt.build_payload(config, 'create', '0.0.4', None, '', 'run-1')
+        payload = mqtt.build_payload(config, 'create', '0.0.6', None, '', 'run-1')
         context = Mock()
         with patch.dict(sys.modules, {'paho': paho, 'paho.mqtt': package}), \
              patch.object(sys, 'stdin', io.StringIO(json.dumps({'config': config, 'payload': payload}))), \
@@ -127,9 +138,9 @@ class MQTTTests(unittest.TestCase):
 
     def test_disabled_and_dry_run_never_publish(self):
         with patch.object(mqtt, 'publish_report') as publish:
-            with mqtt.RunReporter(None, 'create', '0.0.4'):
+            with mqtt.RunReporter(None, 'create', '0.0.6'):
                 pass
-            with mqtt.RunReporter(self.config, 'create', '0.0.4', dry_run=True):
+            with mqtt.RunReporter(self.config, 'create', '0.0.6', dry_run=True):
                 pass
         publish.assert_not_called()
 
@@ -137,7 +148,7 @@ class MQTTTests(unittest.TestCase):
         error_logger = logging.Logger('isolated')
         with patch.object(mqtt, 'publish_report') as publish:
             with self.assertRaisesRegex(RuntimeError, 'original failure'):
-                with mqtt.RunReporter(self.config, 'delete', '0.0.4') as reporter:
+                with mqtt.RunReporter(self.config, 'delete', '0.0.6') as reporter:
                     reporter.attach(error_logger)
                     error_logger.error('Captured detail')
                     raise RuntimeError('original failure')
@@ -149,7 +160,7 @@ class MQTTTests(unittest.TestCase):
     def test_publish_errors_preserve_original_outcome(self):
         for failure in [RuntimeError('secret'), subprocess.TimeoutExpired('worker', 15)]:
             with patch.object(mqtt, 'publish_report', side_effect=failure), self.assertLogs('SnapBeforeWatchTower', level='ERROR') as logs:
-                with mqtt.RunReporter(self.config, 'create', '0.0.4'):
+                with mqtt.RunReporter(self.config, 'create', '0.0.6'):
                     pass
             self.assertNotIn('secret', '\n'.join(logs.output))
 

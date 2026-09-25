@@ -1,92 +1,107 @@
-# Configuration examples
+# SnapBeforeWatchTower configuration reference
 
-The application is configured only through CLI flags and a UTF-8 dataset list. This document is an example reference, not a file the app can load. Replace example paths, dataset names, and the recipient before running. All options and aliases are listed in README.md.
+SnapBeforeWatchTower is configured through a single TOML file. This Markdown file is a human-readable reference only; the application does **not** load it. The loadable example is `config-example.toml`.
 
-## Dataset list
+## Public command-line option
 
-Copy `datasets.example.txt` to `datasets.txt` and edit its two dataset names. There are no supported comments or other keys in this list. The original `snaplist` and `full-snaplist` remain available as installation-specific examples.
-
-## Every option, using long names
+There is one public command-line option:
 
 ```bash
-python3 SnapBeforeWatchTower.py --help
-python3 SnapBeforeWatchTower.py --version
-sudo python3 SnapBeforeWatchTower.py \
-  --command create \
-  --file datasets.txt \
-  --older-than 7d \
-  --retain-count 10 \
-  --send-mail you@example.com \
-  --mail-on-success \
-  --mqtt-config mqtt.json \
-  --dry-run
+sudo python3 SnapBeforeWatchTower.py -c config.toml
 ```
 
-The first commands display usage/version. The last command previews creation and retention with all operational options, using the plain MQTT username/password stored in the selected JSON file. It still writes run logs and may send email; it validates MQTT configuration but suppresses MQTT publishing. Remove `--send-mail` and `--mail-on-success` to disable mail; remove only `--mail-on-success` for failure-only mail. Remove `--mqtt-config` to disable MQTT. Remove `--dry-run` to perform the real operations after reviewing the preview.
-
-## Short aliases and deletion
-
-```bash
-python3 SnapBeforeWatchTower.py -h
-sudo python3 SnapBeforeWatchTower.py -c delete -f datasets.txt -o 2w -r 10 -s you@example.com -mos -d
-```
-
-This previews deletion without invoking Docker. `1m` means 30 days, `2w` means 14 days, and `7d` means seven days. Command, file, age, and count have no defaults and must be supplied. Mail is unset and both switches are false by default. Use a positive count to protect the newest matching snapshots and log groups; zero and negative counts remove that protection. `--version` has no short alias.
-
-## MQTT JSON: every setting
-
-Install `requirements-mqtt.txt`, copy `mqtt.example.json` to a private operational file such as `mqtt.json`, and edit it:
-
-```json
-{
-  "host": "mqtt.example.local",
-  "port": 1883,
-  "topic": "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status",
-  "title": "Zotac RI531 - SnapBeforeWatchTower",
-  "username": "your-mqtt-user",
-  "password": "<String>",
-  "qos": 0,
-  "tls": false,
-  "ca_file": null,
-  "cert_file": null,
-  "key_file": null,
-  "timeout": 15
-}
-```
-
-| Key | Required/default | Meaning |
+| Option | Required | Meaning |
 | --- | --- | --- |
-| `host` | Required | Broker hostname or IP address. |
-| `topic` | Required | Publish topic; `+` and `#` wildcards are rejected. Use the same value in Home Assistant's MQTT trigger. |
-| `port` | 1883, or 8883 when TLS is true and this key is omitted | Broker TCP port, 1–65535. |
-| `title` | `SnapBeforeWatchTower` | Human-readable run name copied to `title`, `name`, and `job`. |
-| `username` | null | Optional broker username. |
-| `password` | null | Optional plain nonempty password string stored directly in the JSON; requires `username`. |
-| `qos` | 0 | MQTT delivery QoS: 0, 1, or 2. Reports are never retained. |
-| `tls` | false | Enable server-authenticated TLS. |
-| `ca_file` | null | Optional CA bundle path relative to this JSON file; requires TLS. System trusted CAs are used when null. |
-| `cert_file` | null | Optional client certificate path relative to this JSON file; requires TLS and `key_file`. |
-| `key_file` | null | Optional client key path relative to this JSON file; requires TLS and `cert_file`. |
-| `timeout` | 15 | Total MQTT worker timeout in seconds, integer 1–120. |
+| `-c CONFIG` | Yes | Path to the TOML configuration file. Relative file paths *inside* the TOML file are resolved relative to the TOML file itself. |
 
-Unknown keys are rejected. For password authentication, place the credentials directly in the JSON:
+There are no separate public flags for command mode, datasets, retention, mail, MQTT, dry-run, help, or version. Those runtime settings belong in TOML so one file describes the whole job.
 
-```json
-{
-  "username": "mqtt-user",
-  "password": "<String>"
-}
+## Complete TOML example
+
+Copy `config-example.toml` to a private operational file such as `config.toml`, copy `datasets.example.txt` to the dataset filename configured in that TOML (the example uses `datasets`), and edit both files. The example intentionally starts with `dry_run = true`, mail disabled, and MQTT disabled.
+
+```toml
+[application]
+command = "create"
+dataset_file = "datasets"
+older_than = "7d"
+retain_count = 10
+dry_run = true
+
+[mail]
+enabled = false
+recipient = "you@example.com"
+on_success = false
+
+[mqtt]
+enabled = false
+host = "mqtt.example.local"
+port = 1883
+topic = "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status"
+title = "Zotac RI531 - SnapBeforeWatchTower"
+username = "your-mqtt-user"
+password = "<String>"
+qos = 0
+tls = false
+ca_file = ""
+cert_file = ""
+key_file = ""
+timeout = 15
 ```
 
-Run the application normally with `--mqtt-config mqtt.json`; no environment-variable setup is required. Because the operational JSON contains the password, protect that file with restrictive permissions and do not commit or share it.
+## `[application]`
 
-Home Assistant must subscribe to the exact topic. A compatible trigger block is:
+| Setting | Required | Meaning |
+| --- | --- | --- |
+| `command` | Yes | `"create"` captures Docker image digests, creates one managed ZFS snapshot per dataset, applies snapshot retention, then cleans old log groups. `"delete"` only applies snapshot retention and log cleanup. |
+| `dataset_file` | Yes | UTF-8 file containing one ZFS dataset name per non-empty line. Relative paths are resolved relative to the TOML file. If ZFS reports a configured dataset does not exist, that dataset is skipped so later datasets still run, but the final run remains failure and notifications identify the missing dataset(s). |
+| `older_than` | Yes | Strict age cutoff such as `"7d"`, `"2w"`, or `"1m"`. Months are treated as 30 days. The integer must be nonnegative. |
+| `retain_count` | Yes | Protect at least this many newest matching snapshots per dataset and newest log timestamp groups. Zero or a negative integer disables the count floor; age rules still apply. |
+| `dry_run` | Yes | When `true`, preview snapshot creation/destruction and old-log deletion. Snapshot listing and logging still occur, configured email can still be sent, Docker digest capture is skipped, and MQTT publishing is suppressed. |
 
-```yaml
-- trigger: mqtt
-  id: snapbeforewatchtower_status
-  options:
-    topic: homeassistant/SnapBeforeWatchTower/Zotac-RI531/status
+## `[mail]` — optional
+
+The whole `[mail]` table may be omitted; mail then defaults to disabled.
+
+| Setting | Required/default | Meaning |
+| --- | --- | --- |
+| `enabled` | Default `false` | Enables failure mail. When false, the other mail values are ignored for runtime delivery. |
+| `recipient` | Required when enabled | Recipient passed to the local `mail` command. Must be a non-empty string when mail is enabled. |
+| `on_success` | Default `false` | Also sends a success mail. Failure mail remains enabled whenever mail is enabled. |
+
+## `[mqtt]` — optional
+
+The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install `requirements-mqtt.txt` only when real MQTT publishing is enabled.
+
+| Setting | Required/default | Meaning |
+| --- | --- | --- |
+| `enabled` | Default `false` | Enables the final MQTT JSON status report. Disabled mode does not require broker fields or Paho. |
+| `host` | Required when enabled | MQTT broker hostname or IP address. |
+| `port` | Default `1883`, or `8883` when TLS is enabled and the key is omitted | Broker TCP port, integer 1–65535. |
+| `topic` | Required when enabled | Publish topic. `+` and `#` wildcards are rejected. It must match the Home Assistant MQTT trigger topic. |
+| `title` | Default `"SnapBeforeWatchTower"` | Human-readable run name copied to the MQTT payload fields `title`, `name`, and `job`. |
+| `username` | Optional | Broker username. Use an empty string for no username. |
+| `password` | Optional | Plain TOML password string. A non-empty password requires a non-empty username. Protect `config.toml` with restrictive permissions. |
+| `qos` | Default `0` | MQTT QoS: `0`, `1`, or `2`. Reports are always non-retained. |
+| `tls` | Default `false` | Enables verified TLS with certificate and hostname verification. |
+| `ca_file` | Optional | CA bundle path. Empty string uses system trust. Relative paths are resolved relative to the TOML file. Requires TLS when set. |
+| `cert_file` | Optional | Client certificate path for mutual TLS. Must be paired with `key_file`; relative paths are TOML-relative. |
+| `key_file` | Optional | Client private-key path for mutual TLS. Must be paired with `cert_file`; relative paths are TOML-relative. |
+| `timeout` | Default `15` | Total MQTT worker timeout in seconds, integer 1–120. |
+
+Unknown TOML sections and unknown keys are rejected. The retired JSON MQTT configuration and old multi-flag interface are not supported.
+
+## Dataset file
+
+Example:
+
+```text
+tank/docker
+tank/appdata
 ```
 
-It can reuse the supplied automation's `trigger.payload_json`, `report.status`, `report.title`, `report.exit_code`, `report.warning`, `report.error`, and `report.stderr` templates.
+Blank lines are ignored. Dataset lines are stripped of surrounding whitespace, are not deduplicated, and do not support comments. Missing-dataset continuation is intentionally narrow: only ZFS stderr identifying a nonexistent dataset is continuable. Other ZFS failures still abort normally. The final MQTT contract remains `success`/`failure`; a missing-dataset run reports `failure` with exit code 1 and a specific reason in `error`.
+
+## Safe first run
+
+Keep `dry_run = true`, verify the logs and planned snapshot retention carefully, and review `SAFETY.md` before changing to a real run. Dry-run still performs real ZFS snapshot listing, so ZFS tools and access to the named datasets are still required.

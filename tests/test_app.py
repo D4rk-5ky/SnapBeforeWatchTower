@@ -160,6 +160,104 @@ class BehaviorTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 app.create_snapshot(self.log, self.err, 'tank/data')
 
+    def test_missing_dataset_detection_only_accepts_missing_zfs_messages(self):
+        missing = subprocess.CalledProcessError(1, ['zfs'], stderr="cannot open 'tank/missing': dataset does not exist")
+        alternate = app.CommandError(['zfs', 'list'], 1, '', "cannot open 'tank/missing': no such pool or dataset")
+        unrelated = app.CommandError(['zfs', 'list'], 1, '', "cannot open 'tank/data': permission denied")
+        self.assertTrue(app.is_missing_dataset_error(missing))
+        self.assertTrue(app.is_missing_dataset_error(alternate))
+        self.assertFalse(app.is_missing_dataset_error(unrelated))
+
+    def test_create_continues_after_missing_dataset_then_fails_run_and_sends_failure_mail(self):
+        with temporary_directory() as folder:
+            dataset_file = Path(folder) / 'datasets.txt'
+            dataset_file.write_text('tank/missing\ntank/good\n', encoding='utf-8')
+            args = argparse.Namespace(
+                command='create', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
+                send_mail='test@example.com', mail_on_success=True, dry_run=False,
+            )
+            reporter = Mock()
+            missing = subprocess.CalledProcessError(
+                1, ['zfs', 'snapshot'], stderr="cannot open 'tank/missing': dataset does not exist"
+            )
+            create = Mock(side_effect=[missing, None])
+            retention = Mock()
+            cleanup = Mock()
+            mail = Mock()
+            err_path = str(Path(folder) / 'run.err')
+            with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value=folder), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                 patch.object(app, 'save_docker_image_digests'), \
+                 patch.object(app, 'create_snapshot', create), \
+                 patch.object(app, 'delete_old_snapshots', retention), \
+                 patch.object(app, 'delete_old_files', cleanup), \
+                 patch.object(app, 'MailTo', mail):
+                with self.assertRaises(app.MissingDatasetsError) as failure:
+                    app.run(args, reporter)
+
+        self.assertIn('dataset does not exist', str(failure.exception))
+        self.assertIn('tank/missing', str(failure.exception))
+        self.assertEqual([call.args[2] for call in create.call_args_list], ['tank/missing', 'tank/good'])
+        retention.assert_called_once()
+        self.assertEqual(retention.call_args.args[2], 'tank/good')
+        cleanup.assert_called_once()
+        mail.assert_called_once()
+        self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower FAILED - missing dataset')
+        self.assertIn('tank/missing', mail.call_args.kwargs['intro'])
+
+    def test_delete_continues_after_missing_dataset_and_processes_following_dataset(self):
+        with temporary_directory() as folder:
+            dataset_file = Path(folder) / 'datasets.txt'
+            dataset_file.write_text('tank/missing\ntank/good\n', encoding='utf-8')
+            args = argparse.Namespace(
+                command='delete', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
+                send_mail=None, mail_on_success=False, dry_run=False,
+            )
+            reporter = Mock()
+            missing = app.CommandError(
+                ['zfs', 'list', 'tank/missing'], 1, '', "cannot open 'tank/missing': dataset does not exist"
+            )
+            retention = Mock(side_effect=[missing, None])
+            cleanup = Mock()
+            err_path = str(Path(folder) / 'run.err')
+            with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value=folder), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                 patch.object(app, 'delete_old_snapshots', retention), \
+                 patch.object(app, 'delete_old_files', cleanup):
+                with self.assertRaises(app.MissingDatasetsError):
+                    app.run(args, reporter)
+
+        self.assertEqual([call.args[2] for call in retention.call_args_list], ['tank/missing', 'tank/good'])
+        cleanup.assert_called_once()
+
+    def test_unrelated_dataset_command_error_still_aborts_immediately(self):
+        with temporary_directory() as folder:
+            dataset_file = Path(folder) / 'datasets.txt'
+            dataset_file.write_text('tank/denied\ntank/good\n', encoding='utf-8')
+            args = argparse.Namespace(
+                command='create', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
+                send_mail=None, mail_on_success=False, dry_run=False,
+            )
+            reporter = Mock()
+            denied = subprocess.CalledProcessError(1, ['zfs', 'snapshot'], stderr='permission denied')
+            create = Mock(side_effect=denied)
+            cleanup = Mock()
+            err_path = str(Path(folder) / 'run.err')
+            with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value=folder), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                 patch.object(app, 'save_docker_image_digests'), \
+                 patch.object(app, 'create_snapshot', create), \
+                 patch.object(app, 'delete_old_snapshots'), \
+                 patch.object(app, 'delete_old_files', cleanup):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    app.run(args, reporter)
+
+        self.assertEqual(create.call_count, 1)
+        cleanup.assert_not_called()
+
     def test_log_groups_count_age_and_dry_run(self):
         with temporary_directory() as folder:
             base = Path(folder)

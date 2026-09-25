@@ -25,6 +25,13 @@ This map describes the current application, why each function/class exists, and 
 - `CommandError(RuntimeError)` — structured exception for failed external commands run through `run_cmd()`. It retains the command, return code, stdout, and stderr so the real failure propagates without silently continuing destructive logic.
   - `CommandError.__init__(cmd, returncode, stdout, stderr)` — stores command-result details and creates a concise exception message.
 
+- `MissingDatasetsError(RuntimeError)` — aggregate final failure raised only after all remaining configured datasets and normal log cleanup have been processed when one or more datasets were absent. Its message names the missing dataset(s) and contains the explicit `dataset does not exist` reason so mail and MQTT can distinguish this condition without adding a new status value.
+  - `MissingDatasetsError.__init__(datasets)` — stores the missing dataset names and builds the user-facing final failure text.
+
+- `is_missing_dataset_error(exc)` — inspects captured ZFS stderr from either `subprocess.CalledProcessError` or `CommandError` and returns true only for known absent-dataset wording (`dataset does not exist` or `no such pool or dataset`). This prevents permission errors and unrelated command failures from being treated as safe-to-continue.
+
+- `remember_missing_dataset(error_logger, missing_datasets, dataset, exc)` — centralizes per-dataset continuation. It records each missing dataset once, logs that later datasets will continue, and returns false for any unrelated error so the caller re-raises it immediately.
+
 - `run_cmd(cmd, logger=None, error_logger=None, check=True, dry_run=False)` — shared captured-subprocess helper. It avoids terminal spam, records failures through the error logger, raises `CommandError` when requested, and suppresses actual execution when `dry_run=True`.
 
 - `get_newest_files(log_dir, prefix)` — finds the newest `.log` and `.err` independently by modification time for email reporting. Independent selection preserves the application's existing mail behavior even when one file is missing.
@@ -55,7 +62,7 @@ This map describes the current application, why each function/class exists, and 
 
 - `main()` — exposes the only public CLI option, `-c CONFIG`. It rejects every other flag, loads TOML before operations, creates the optional MQTT `RunReporter`, and enters the unchanged operation flow.
 
-- `run(args, reporter)` — active operation coordinator. It chooses logging, attaches the MQTT error observer, enforces root before dataset/Docker/ZFS operations, reads datasets, executes create/delete behavior in file order, handles failure mail, handles optional success mail, and removes an empty current `.err`. It deliberately preserves prior operation order and failure propagation.
+- `run(args, reporter)` — active operation coordinator. It chooses logging, attaches the MQTT error observer, enforces root before dataset/Docker/ZFS operations, reads datasets, and executes create/delete behavior in file order. A ZFS missing-dataset error from snapshot creation or snapshot listing is recorded per dataset and processing continues; after later datasets and normal log cleanup finish, `MissingDatasetsError` makes the overall run fail, selects missing-dataset failure mail, and gives MQTT a specific failure reason. Any other operation error still propagates immediately. Optional success mail and empty-current-`.err` cleanup remain unchanged.
 
 ## `mqtt_report.py`
 
@@ -111,7 +118,11 @@ This map describes the current application, why each function/class exists, and 
   - `test_nonpositive_count_disables_floor()` — verifies zero/negative counts do not accidentally protect old snapshots.
   - `test_dry_run_lists_but_never_creates_destroys_or_captures_docker()` — proves destructive/create commands are suppressed while real snapshot listing remains.
   - `test_list_failure_prevents_destroy()` — proves a failed ZFS list aborts before destroy.
-  - `test_create_failure_propagates()` — proves snapshot creation failures remain fatal.
+  - `test_create_failure_propagates()` — proves the low-level snapshot helper still re-raises ZFS creation failures for the run coordinator to classify.
+  - `test_missing_dataset_detection_only_accepts_missing_zfs_messages()` — proves only known absent-dataset stderr is classified as continuable while permission errors are not.
+  - `test_create_continues_after_missing_dataset_then_fails_run_and_sends_failure_mail()` — proves create mode skips one missing dataset, processes the next, runs log cleanup, then returns the aggregate failure and selects missing-dataset failure mail instead of success mail.
+  - `test_delete_continues_after_missing_dataset_and_processes_following_dataset()` — proves delete/retention mode has the same per-dataset continuation and final-failure behavior.
+  - `test_unrelated_dataset_command_error_still_aborts_immediately()` — proves unrelated ZFS errors retain the old immediate-abort safety boundary.
   - `test_log_groups_count_age_and_dry_run()` — verifies log-group retention and dry-run behavior.
   - `test_docker_nonzero_is_logged_and_returns_none()` — verifies Docker digest failure stays nonfatal and leaves no digest artifact.
   - `test_nonroot_refuses_before_dataset_or_external_commands()` — verifies root enforcement occurs before dataset/ZFS/Docker operations.
@@ -131,9 +142,20 @@ This map describes the current application, why each function/class exists, and 
   - `test_password_optional_strings_and_dependency_validation()` — verifies direct password auth, empty-string normalization, username requirement, and conditional Paho dependency enforcement.
   - `test_tls_relative_paths_resolve_from_toml_directory()` — verifies certificate files use the TOML directory as their base.
   - `test_payload_success_warning_and_failure_contract()` — verifies JSON payload status/exit/warning metadata for representative outcomes.
+  - `test_missing_dataset_failure_keeps_existing_failure_contract_and_reason()` — proves a missing-dataset aggregate remains `status=failure`, `exit_code=1`, `warning=false`, and carries the specific missing-dataset reason in `error` without changing the Home Assistant contract.
   - `test_capture_is_bounded_and_ignores_separators()` — verifies MQTT error text is bounded and cosmetic separators are ignored.
   - `test_worker_publish_uses_auth_tls_and_no_retain()` — verifies Paho receives direct auth, TLS context, payload, and `retain=false`.
   - `test_publisher_timeout_stdin_and_failure()` — verifies timeout usage, stdin transport, and secret-safe worker failure handling.
   - `test_disabled_and_dry_run_never_publish()` — verifies disabled/dry-run reporting cannot publish.
   - `test_reporter_publishes_once_and_does_not_mask_failure()` — verifies one failure report while the original exception still propagates.
   - `test_publish_errors_preserve_original_outcome()` — verifies MQTT delivery failure is sanitized and never changes the underlying operation outcome.
+
+## Configuration and integration files
+
+- `config-example.toml` — loadable, fully commented example containing every supported `[application]`, `[mail]`, and `[mqtt]` setting. It defaults to dry-run with mail and MQTT disabled for a safer first copy.
+- `config.example.md` — supplemental human-readable reference for the same current TOML-only interface. It documents the single public `-c CONFIG` option and every supported TOML setting, but is never parsed by the application.
+- `datasets.example.txt` — minimal two-line example of the dataset-list format consumed by `dataset_file`.
+- `requirements-mqtt.txt` — optional Paho MQTT dependency list required only for real MQTT publishing.
+- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` — example Home Assistant MQTT status automation for SnapBeforeWatchTower. It listens for the JSON report, sends Pushover success/failure/unknown notifications, and uses SnapBeforeWatchTower naming throughout.
+- `SAFETY.md` — preserved disclaimer/liability/data-loss notices for this project.
+- `.gitignore` — excludes private operational `config*` files, runtime dataset/list files, logs, Python caches, and build artifacts while explicitly keeping the shipped `config-example.toml`, `config.example.md`, and `datasets.example.txt` examples trackable.

@@ -10,6 +10,8 @@ command = "create"
 
 # UTF-8 text file containing one ZFS dataset name per non-empty line.
 # Relative paths are resolved relative to this TOML file.
+# A dataset that ZFS reports as nonexistent is skipped so later datasets still run,
+# but the final run remains a failure and failure notifications identify it as missing.
 dataset_file = "datasets"
 
 # Age cutoff for managed snapshots and log groups.

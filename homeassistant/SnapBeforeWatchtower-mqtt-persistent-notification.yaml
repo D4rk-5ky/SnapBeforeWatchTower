@@ -1,10 +1,10 @@
 alias: SnapBeforeWatchTower - MQTT JSON Status
 description: >-
-  Handle Syncerate success, failure, or unknown reports from the dedicated
+  Handle SnapBeforeWatchTower success, failure, or unknown reports from the dedicated
   non-retained MQTT JSON status topic.
 triggers:
   - trigger: mqtt
-    id: syncerate
+    id: snapbeforewatchtower
     options:
       topic: homeassistant/SnapBeforeWatchTower/Zotac-RI531/status
 conditions: []
@@ -20,9 +20,9 @@ actions:
         {% if trigger.payload_json is defined %}
           {{ trigger.payload_json.title
              | default(trigger.payload_json.name
-             | default(trigger.payload_json.job | default('Syncerate'))) }}
+             | default(trigger.payload_json.job | default('SnapBeforeWatchTower'))) }}
         {% else %}
-          Syncerate
+          SnapBeforeWatchTower
         {% endif %}
       report_exit_code: |-
         {% if trigger.payload_json is defined %}
@@ -84,7 +84,7 @@ actions:
     default:
       - action: notify.pushover
         data:
-          title: ❔ Syncerate status unknown
+          title: ❔ SnapBeforeWatchTower status unknown
           message: >-
             Received an MQTT status that was neither success nor failure.
 

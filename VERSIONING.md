@@ -1,8 +1,54 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. Version 0.0.4 removes the public `--version` flag because `-c CONFIG` is now the only public CLI option.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.6. The public application interface remains TOML-only with `-c CONFIG` as its single public CLI option.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.6 — 2026-09-25
+
+### Application code and behavior
+
+- Bump the application version from 0.0.5 to 0.0.6 so MQTT release metadata identifies this behavior release.
+- Add `MissingDatasetsError` as an aggregate final failure used only after the script has processed all remaining configured datasets and normal log cleanup following one or more missing-dataset errors.
+- Add `is_missing_dataset_error()` to classify captured ZFS stderr conservatively. It recognizes `dataset does not exist` and `no such pool or dataset`; unrelated ZFS errors are not continuable.
+- Add `remember_missing_dataset()` to record each missing dataset once and log that processing will continue with later datasets.
+- In `create` mode, catch missing-dataset failures from both `zfs snapshot` (`subprocess.CalledProcessError`) and retention `zfs list` (`CommandError`) around each dataset. Skip only that dataset, continue later datasets, then run normal log cleanup.
+- In `delete` mode, catch the same missing-dataset condition from the per-dataset snapshot listing, continue later datasets, then run normal log cleanup.
+- After remaining work finishes, raise `MissingDatasetsError` so the process still has a failure outcome. Failure mail is sent when mail is enabled, with a dedicated `SnapBeforeWatchTower FAILED - missing dataset` subject and introductory text naming the reason. `on_success=true` does not cause an additional success mail for this run.
+- Preserve the MQTT schema and Home Assistant contract: no new status/event is introduced. Missing-dataset runs publish `status: "failure"`, `exit_code: 1`, and keep `warning: false`; the existing `error` field now names the missing dataset(s) and says `dataset does not exist`, while `stderr` retains bounded current-run error detail.
+- Preserve the immediate-abort safety behavior for every non-missing ZFS error such as permission failures. No retention selection, snapshot naming, destroy safety, Docker behavior, root enforcement, TOML schema, MQTT publish/QoS/retain/TLS behavior, or dry-run mutation boundary is changed.
+
+### Documentation, tests, integration, and packaging
+
+- Update README.md for current behavior only: missing-dataset continuation, final failure/mail behavior, unchanged MQTT success/failure contract, and the distinction between continuable missing datasets and immediately fatal unrelated ZFS errors.
+- Update `config-example.toml` and `config.example.md` to describe the missing-dataset behavior without adding any new configuration setting. All existing settings and the single public `-c CONFIG` option remain unchanged.
+- Update `commented_code_map.md` for the new exception/helpers, run coordination, and regression tests.
+- Add regression coverage for exact missing-dataset stderr classification, create-mode continuation plus failure mail, delete-mode continuation, unrelated-error immediate abort, and the unchanged MQTT failure schema/reason.
+- Update MQTT regression fixture version strings to 0.0.6.
+- Keep the supplied Home Assistant automation control flow unchanged because it already branches on `status == "success"` and `status == "failure"` and displays the existing `error`/`stderr` fields.
+- Keep `SAFETY.md` and its disclaimer/liability/data-loss notices unchanged.
+- Refresh `VERIFICATION.md` and package a clean release ZIP with all original project paths and no Python/cache/build/temp artifacts.
+
+## 0.0.5 — 2026-09-25
+
+### Application code and behavior
+
+- Bump the application version from 0.0.4 to 0.0.5 so MQTT release metadata identifies this maintenance release.
+- Update MQTT regression-test sample version strings from 0.0.4 to 0.0.5 so test fixtures match the current release metadata.
+- No ZFS snapshot creation/deletion logic, retention selection, Docker digest behavior, root enforcement, mail behavior, MQTT validation/publish behavior, dry-run semantics, operation order, or destructive-operation safety boundaries changed.
+
+### Configuration, documentation, integration, and packaging
+
+- Repair the stale `config.example.md` that was present in the supplied 0.0.4 archive even though the 0.0.4 history/verification described it as removed. Preserve the path rather than deleting it and rewrite it as a current supplemental TOML reference.
+- Document the single public `-c CONFIG` option and every supported `[application]`, `[mail]`, and `[mqtt]` setting in `config.example.md`; remove obsolete multi-flag and `mqtt.json` instructions from that file.
+- Keep `config-example.toml` as the loadable fully commented example; add README/setup guidance to copy `datasets.example.txt` to the configured dataset filename before first use.
+- Correct README current-use text that incorrectly claimed `datasets`, `snaplist`, and `full-snaplist` were included in the supplied archive. The release only ships `datasets.example.txt`; no missing historical files were invented or reconstructed.
+- Fix `.gitignore` so broad private `config*` exclusion still protects operational configs while explicitly keeping `config-example.toml` and `config.example.md` trackable, alongside the existing `datasets.example.txt` exception.
+- Fix copied Home Assistant naming remnants: replace `Syncerate`/`syncerate` descriptions, fallback names, trigger ID, and unknown-status title with `SnapBeforeWatchTower`/`snapbeforewatchtower`. The MQTT topic and notification logic are unchanged.
+- Extend `commented_code_map.md` with the current configuration, safety, dependency, `.gitignore`, dataset-example, and Home Assistant integration files while retaining complete Python function/class/command explanations.
+- Keep `SAFETY.md` and its disclaimer/liability/data-loss notices unchanged.
+- Refresh `VERIFICATION.md` with post-change compile, regression, CLI-boundary, documentation/config-coverage, naming, manifest, and clean-package checks.
+- Preserve every path present in the supplied 0.0.4 archive. No source/project file is removed and no runtime/cache material is added to the release ZIP.
 
 ## 0.0.4 — 2026-09-15
 

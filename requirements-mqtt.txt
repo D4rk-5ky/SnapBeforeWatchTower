@@ -1,2 +1,2 @@
-# Optional: install only when [mqtt].enabled=true for real (non-dry-run) publishing.
+# Optional: required whenever [mqtt].enabled=true, including dry-run reporting.
 paho-mqtt>=2.1,<3

@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 SPEC = importlib.util.spec_from_file_location('snap_app', ROOT / 'SnapBeforeWatchTower.py')
 app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(app)
+import mqtt_report as mqtt
 
 
 @contextmanager
@@ -37,7 +38,7 @@ def temporary_directory():
 
 
 def write_config(folder, *, command='create', dataset_file='datasets.txt', older_than='7d', retain_count=10,
-                 dry_run=False, mail='', mqtt=''):
+                 dry_run=False, continue_on_missing_dataset=True, continue_on_other_failures=True, mail='', mqtt=''):
     """Write a minimal TOML config used by parser/integration tests."""
     path = Path(folder) / 'config.toml'
     path.write_text(
@@ -47,6 +48,8 @@ def write_config(folder, *, command='create', dataset_file='datasets.txt', older
         f'older_than = "{older_than}"\n'
         f'retain_count = {retain_count}\n'
         f'dry_run = {str(dry_run).lower()}\n'
+        f'continue_on_missing_dataset = {str(continue_on_missing_dataset).lower()}\n'
+        f'continue_on_other_failures = {str(continue_on_other_failures).lower()}\n'
         f'{mail}'
         f'{mqtt}',
         encoding='utf-8',
@@ -83,6 +86,8 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(args.older_than, dt.timedelta(days=7))
         self.assertEqual(args.retain_count, 10)
         self.assertTrue(args.dry_run)
+        self.assertTrue(args.continue_on_missing_dataset)
+        self.assertTrue(args.continue_on_other_failures)
         self.assertEqual(args.send_mail, 'test@example.com')
         self.assertTrue(args.mail_on_success)
         self.assertEqual(mqtt_config['password'], 'secret')
@@ -94,6 +99,25 @@ class BehaviorTests(unittest.TestCase):
             args, mqtt_config = app.load_app_config(config)
         self.assertIsNone(args.send_mail)
         self.assertFalse(args.mail_on_success)
+        self.assertTrue(args.continue_on_missing_dataset)
+        self.assertTrue(args.continue_on_other_failures)
+        self.assertIsNone(mqtt_config)
+
+    def test_continuation_settings_default_true_when_omitted_for_older_configs(self):
+        with temporary_directory() as folder:
+            path = Path(folder) / 'legacy-config.toml'
+            path.write_text(
+                '[application]\n'
+                'command = "delete"\n'
+                'dataset_file = "datasets"\n'
+                'older_than = "7d"\n'
+                'retain_count = 10\n'
+                'dry_run = true\n',
+                encoding='utf-8',
+            )
+            args, mqtt_config = app.load_app_config(path)
+        self.assertTrue(args.continue_on_missing_dataset)
+        self.assertTrue(args.continue_on_other_failures)
         self.assertIsNone(mqtt_config)
 
     def test_toml_invalid_values_and_old_flag_keys_are_rejected(self):
@@ -105,6 +129,8 @@ class BehaviorTests(unittest.TestCase):
             '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\nfile="old-flag"\n',
             '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\n\n[mail]\nenabled=true\nrecipient=""\non_success=false\n',
             '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\n\n[mqtt]\nenabled=false\npassword_env="OLD"\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\ncontinue_on_missing_dataset="true"\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\ncontinue_on_other_failures=1\n',
             '[unknown]\nvalue=1\n',
         ]
         with temporary_directory() as folder:
@@ -170,6 +196,20 @@ class BehaviorTests(unittest.TestCase):
         self.assertTrue(app.is_missing_dataset_error(alternate))
         self.assertFalse(app.is_missing_dataset_error(unrelated))
 
+    def test_checked_zfs_list_destroy_detection_excludes_snapshot_and_unrelated_commands(self):
+        self.assertTrue(app.is_checked_zfs_list_or_destroy_error(
+            app.CommandError(['zfs', 'list', 'tank/data'], 1, '', 'permission denied')
+        ))
+        self.assertTrue(app.is_checked_zfs_list_or_destroy_error(
+            app.CommandError(['zfs', 'destroy', 'tank/data@snap'], 1, '', 'busy')
+        ))
+        self.assertFalse(app.is_checked_zfs_list_or_destroy_error(
+            app.CommandError(['docker', 'images'], 1, '', 'failed')
+        ))
+        self.assertFalse(app.is_checked_zfs_list_or_destroy_error(
+            subprocess.CalledProcessError(1, ['zfs', 'snapshot'], stderr='permission denied')
+        ))
+
     def test_create_continues_after_missing_dataset_then_fails_run_and_sends_failure_mail(self):
         with temporary_directory() as folder:
             dataset_file = Path(folder) / 'datasets.txt'
@@ -177,6 +217,7 @@ class BehaviorTests(unittest.TestCase):
             args = argparse.Namespace(
                 command='create', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
                 send_mail='test@example.com', mail_on_success=True, dry_run=False,
+                continue_on_missing_dataset=True, continue_on_other_failures=True,
             )
             reporter = Mock()
             missing = subprocess.CalledProcessError(
@@ -215,6 +256,7 @@ class BehaviorTests(unittest.TestCase):
             args = argparse.Namespace(
                 command='delete', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
                 send_mail=None, mail_on_success=False, dry_run=False,
+                continue_on_missing_dataset=True, continue_on_other_failures=True,
             )
             reporter = Mock()
             missing = app.CommandError(
@@ -234,13 +276,104 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual([call.args[2] for call in retention.call_args_list], ['tank/missing', 'tank/good'])
         cleanup.assert_called_once()
 
-    def test_unrelated_dataset_command_error_still_aborts_immediately(self):
+    def test_missing_dataset_stops_immediately_when_configured_false_and_reports_failure(self):
+        with temporary_directory() as folder:
+            dataset_file = Path(folder) / 'datasets.txt'
+            dataset_file.write_text('tank/missing\ntank/good\n', encoding='utf-8')
+            args = argparse.Namespace(
+                command='create', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
+                send_mail='test@example.com', mail_on_success=True, dry_run=False,
+                continue_on_missing_dataset=False, continue_on_other_failures=True,
+            )
+            missing = subprocess.CalledProcessError(
+                1, ['zfs', 'snapshot'], stderr="cannot open 'tank/missing': dataset does not exist"
+            )
+            create = Mock(side_effect=[missing, None])
+            cleanup = Mock()
+            mail = Mock()
+            err_path = str(Path(folder) / 'run.err')
+            with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value=folder), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                 patch.object(app, 'save_docker_image_digests'), \
+                 patch.object(app, 'create_snapshot', create), \
+                 patch.object(app, 'delete_old_snapshots'), \
+                 patch.object(app, 'delete_old_files', cleanup), \
+                 patch.object(app, 'MailTo', mail):
+                with self.assertRaises(app.MissingDatasetsError):
+                    app.run(args, Mock())
+        self.assertEqual(create.call_count, 1)
+        cleanup.assert_not_called()
+        mail.assert_called_once()
+        self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower FAILED - missing dataset')
+        self.assertIn('stopped immediately', mail.call_args.kwargs['intro'])
+
+    def test_other_zfs_list_destroy_failure_continues_when_configured_true_then_fails_run(self):
+        for command in [
+            ['zfs', 'list', '-H', '-t', 'snapshot', '-o', 'name', 'tank/bad'],
+            ['zfs', 'destroy', 'tank/bad@SnapBeforeWatchTower-Date-2000-01-01_00_00_00'],
+        ]:
+            with self.subTest(command=command), temporary_directory() as folder:
+                dataset_file = Path(folder) / 'datasets.txt'
+                dataset_file.write_text('tank/bad\ntank/good\n', encoding='utf-8')
+                args = argparse.Namespace(
+                    command='delete', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
+                    send_mail='test@example.com', mail_on_success=False, dry_run=False,
+                    continue_on_missing_dataset=True, continue_on_other_failures=True,
+                )
+                failure = app.CommandError(command, 1, '', 'permission denied')
+                retention = Mock(side_effect=[failure, None])
+                cleanup = Mock()
+                mail = Mock()
+                err_path = str(Path(folder) / 'run.err')
+                with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                     patch.object(app, 'pick_log_folder', return_value=folder), \
+                     patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                     patch.object(app, 'delete_old_snapshots', retention), \
+                     patch.object(app, 'delete_old_files', cleanup), \
+                     patch.object(app, 'MailTo', mail):
+                    with self.assertRaises(app.DatasetCommandFailuresError):
+                        app.run(args, Mock())
+                self.assertEqual([call.args[2] for call in retention.call_args_list], ['tank/bad', 'tank/good'])
+                cleanup.assert_called_once()
+                mail.assert_called_once()
+                self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower FAILED - dataset command failure')
+
+    def test_other_zfs_list_destroy_failure_stops_immediately_when_configured_false(self):
+        with temporary_directory() as folder:
+            dataset_file = Path(folder) / 'datasets.txt'
+            dataset_file.write_text('tank/bad\ntank/good\n', encoding='utf-8')
+            args = argparse.Namespace(
+                command='delete', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
+                send_mail='test@example.com', mail_on_success=False, dry_run=False,
+                continue_on_missing_dataset=True, continue_on_other_failures=False,
+            )
+            failure = app.CommandError(['zfs', 'list', 'tank/bad'], 1, '', 'permission denied')
+            retention = Mock(side_effect=[failure, None])
+            cleanup = Mock()
+            mail = Mock()
+            err_path = str(Path(folder) / 'run.err')
+            with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value=folder), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                 patch.object(app, 'delete_old_snapshots', retention), \
+                 patch.object(app, 'delete_old_files', cleanup), \
+                 patch.object(app, 'MailTo', mail):
+                with self.assertRaises(app.CommandError):
+                    app.run(args, Mock())
+        self.assertEqual(retention.call_count, 1)
+        cleanup.assert_not_called()
+        mail.assert_called_once()
+        self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower FAILED - logs attached')
+
+    def test_snapshot_create_failure_still_aborts_even_when_other_failure_continuation_is_true(self):
         with temporary_directory() as folder:
             dataset_file = Path(folder) / 'datasets.txt'
             dataset_file.write_text('tank/denied\ntank/good\n', encoding='utf-8')
             args = argparse.Namespace(
                 command='create', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
                 send_mail=None, mail_on_success=False, dry_run=False,
+                continue_on_missing_dataset=True, continue_on_other_failures=True,
             )
             reporter = Mock()
             denied = subprocess.CalledProcessError(1, ['zfs', 'snapshot'], stderr='permission denied')
@@ -296,6 +429,25 @@ class BehaviorTests(unittest.TestCase):
         run.assert_not_called()
         popen.assert_not_called()
 
+    def test_runtime_base_dir_keeps_project_dist_clean_when_frozen(self):
+        source_dir = app.runtime_base_dir()
+        self.assertEqual(source_dir, str(ROOT))
+        with patch.object(app.sys, 'frozen', True, create=True), \
+             patch.object(app.sys, 'executable', '/opt/sbwt/dist/SnapBeforeWatchTower'):
+            self.assertEqual(app.runtime_base_dir(), '/opt/sbwt')
+
+    def test_runtime_base_dir_uses_executable_directory_when_frozen_outside_dist(self):
+        with patch.object(app.sys, 'frozen', True, create=True), \
+             patch.object(app.sys, 'executable', '/opt/sbwt/bin/SnapBeforeWatchTower'):
+            self.assertEqual(app.runtime_base_dir(), '/opt/sbwt/bin')
+
+    def test_frozen_private_mqtt_worker_entrypoint_bypasses_public_cli(self):
+        with patch.object(app.sys, 'frozen', True, create=True), \
+             patch.object(sys, 'argv', ['SnapBeforeWatchTower', '--mqtt-publish-worker']), \
+             patch.object(app, 'mqtt_worker') as worker:
+            app.main()
+        worker.assert_called_once_with()
+
     def test_main_create_order_and_docker_failure_continuation(self):
         with temporary_directory() as folder:
             datasets = Path(folder) / 'datasets.txt'
@@ -314,6 +466,63 @@ class BehaviorTests(unittest.TestCase):
                 app.main()
             self.assertEqual([c[0] for c in events.mock_calls], ['capture', 'create', 'retention', 'create', 'retention', 'cleanup'])
             self.assertEqual([c.args[2] for c in events.create.call_args_list], ['tank/data', 'tank/other'])
+
+    def test_main_dry_run_success_attempts_mail_and_mqtt_when_both_on_success_are_true(self):
+        with temporary_directory() as folder:
+            dataset_file = Path(folder) / 'datasets.txt'
+            dataset_file.write_text('tank/data\n', encoding='utf-8')
+            config = write_config(
+                folder,
+                dry_run=True,
+                mail='\n[mail]\nenabled = true\nrecipient = "test@example.com"\non_success = true\n',
+                mqtt='\n[mqtt]\nenabled = true\nhost = "broker"\ntopic = "test/status"\ntitle = "test"\non_success = true\n',
+            )
+            mail = Mock(return_value=True)
+            err_path = str(Path(folder) / 'run.err')
+            with patch.object(sys, 'argv', ['app', '-c', str(config)]), \
+                 patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value=folder), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                 patch.object(app, 'save_docker_image_digests'), \
+                 patch.object(app, 'create_snapshot'), \
+                 patch.object(app, 'delete_old_snapshots'), \
+                 patch.object(app, 'delete_old_files'), \
+                 patch.object(app, 'MailTo', mail), \
+                 patch.object(mqtt.importlib, 'import_module', return_value=Mock()), \
+                 patch.object(mqtt, 'publish_report') as publish:
+                app.main()
+
+        mail.assert_called_once()
+        self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower DRY-RUN SUCCESS - logs attached')
+        publish.assert_called_once()
+        payload = publish.call_args.args[1]
+        self.assertEqual(payload['status'], 'success')
+        self.assertTrue(payload['dry_run'])
+
+    def test_dry_run_continued_dataset_command_failure_still_reports_failure(self):
+        with temporary_directory() as folder:
+            dataset_file = Path(folder) / 'datasets.txt'
+            dataset_file.write_text('tank/bad\ntank/good\n', encoding='utf-8')
+            args = argparse.Namespace(
+                command='delete', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
+                send_mail='test@example.com', mail_on_success=False, dry_run=True,
+                continue_on_missing_dataset=True, continue_on_other_failures=True,
+            )
+            failure = app.CommandError(['zfs', 'list', 'tank/bad'], 1, '', 'permission denied')
+            retention = Mock(side_effect=[failure, None])
+            mail = Mock()
+            err_path = str(Path(folder) / 'run.err')
+            with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value=folder), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                 patch.object(app, 'delete_old_snapshots', retention), \
+                 patch.object(app, 'delete_old_files'), \
+                 patch.object(app, 'MailTo', mail):
+                with self.assertRaises(app.DatasetCommandFailuresError):
+                    app.run(args, Mock())
+        mail.assert_called_once()
+        self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower DRY-RUN FAILED - dataset command failure')
+        self.assertIn('dry-run continued past', mail.call_args.kwargs['intro'])
 
     def test_dry_run_success_mail_respects_on_success(self):
         with temporary_directory() as folder:
@@ -360,6 +569,15 @@ class BehaviorTests(unittest.TestCase):
             self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower DRY-RUN FAILED - logs attached')
             self.assertIn('dry-run failed', mail.call_args.kwargs['intro'])
 
+    def test_mailto_returns_delivery_result(self):
+        with temporary_directory() as folder:
+            Path(folder, 'SnapBeforeWatchTower-Date-2026-10-02_00_00_00.log').write_text('log', encoding='utf-8')
+            with patch.object(app, 'send_mail', return_value=(0, '')):
+                self.assertTrue(app.MailTo(self.log, self.err, 'test@example.com', folder))
+            with patch.object(app, 'send_mail', return_value=(75, 'temporary mail failure')):
+                self.assertFalse(app.MailTo(self.log, self.err, 'test@example.com', folder))
+            self.err.error.assert_any_call('There was an error sending the mail (exit code 75)')
+
     def test_mail_options_precede_recipient(self):
         proc = Mock(returncode=0)
         proc.communicate.return_value = (None, b'')
@@ -387,7 +605,7 @@ class CLITests(unittest.TestCase):
     def test_version_exits_without_config(self):
         result = self.run_cli('--version')
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
-        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.8')
+        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.14')
         self.assertEqual(result.stderr, '')
 
     def test_config_is_required_and_retired_operational_flags_are_rejected(self):

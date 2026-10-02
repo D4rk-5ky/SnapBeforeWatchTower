@@ -84,7 +84,7 @@ class MQTTTests(unittest.TestCase):
             (SystemExit(1), 'Must run as root', 'failure', 1, False),
             (KeyboardInterrupt(), '', 'failure', 130, False),
         ]:
-            payload = mqtt.build_payload(self.config, 'create', '0.0.8', exc, errors, 'run-123')
+            payload = mqtt.build_payload(self.config, 'create', '0.0.14', exc, errors, 'run-123')
             self.assertEqual((payload['status'], payload['exit_code'], payload['warning']), (status, code, warning))
             for key in ['title', 'name', 'job', 'error', 'stderr', 'run_id', 'finished_at']:
                 self.assertIsInstance(payload[key], str)
@@ -96,7 +96,7 @@ class MQTTTests(unittest.TestCase):
 
     def test_missing_dataset_failure_keeps_existing_failure_contract_and_reason(self):
         exc = app.MissingDatasetsError(['tank/missing', 'tank/also-missing'])
-        payload = mqtt.build_payload(self.config, 'create', '0.0.8', exc, 'missing dataset detail', 'run-missing')
+        payload = mqtt.build_payload(self.config, 'create', '0.0.14', exc, 'missing dataset detail', 'run-missing')
         self.assertEqual(payload['status'], 'failure')
         self.assertEqual(payload['exit_code'], 1)
         self.assertFalse(payload['warning'])
@@ -118,7 +118,7 @@ class MQTTTests(unittest.TestCase):
         package = types.ModuleType('paho.mqtt')
         package.publish = publish
         config = dict(self.config, username='user', password='secret', tls=True)
-        payload = mqtt.build_payload(config, 'create', '0.0.8', None, '', 'run-1')
+        payload = mqtt.build_payload(config, 'create', '0.0.14', None, '', 'run-1')
         context = Mock()
         with patch.dict(sys.modules, {'paho': paho, 'paho.mqtt': package}), \
              patch.object(sys, 'stdin', io.StringIO(json.dumps({'config': config, 'payload': payload}))), \
@@ -137,24 +137,41 @@ class MQTTTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['timeout'], 15)
         self.assertEqual(json.loads(run.call_args.kwargs['input'])['payload']['status'], 'success')
         self.assertNotIn('broker.example', ' '.join(run.call_args.args[0]))
-        with patch.object(mqtt.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'secret')):
-            with self.assertRaises(RuntimeError) as exc:
+        with patch.object(mqtt.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'ConnectionRefusedError')):
+            with self.assertRaises(mqtt.MQTTPublishError) as exc:
                 mqtt.publish_report(self.config, {})
-        self.assertNotIn('secret', str(exc.exception))
+        self.assertEqual(exc.exception.reason, 'ConnectionRefusedError')
+        self.assertNotIn('broker.example', str(exc.exception))
+
+        with patch.object(mqtt.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'secret details: password=oops')):
+            with self.assertRaises(mqtt.MQTTPublishError) as exc:
+                mqtt.publish_report(self.config, {})
+        self.assertEqual(exc.exception.reason, 'UnknownError')
+        self.assertNotIn('password', str(exc.exception))
+
+    def test_frozen_publish_reexecutes_binary_worker_without_credentials_on_argv(self):
+        with patch.object(mqtt.sys, 'frozen', True, create=True), \
+             patch.object(mqtt.sys, 'executable', '/opt/sbwt/dist/SnapBeforeWatchTower'), \
+             patch.object(mqtt.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            mqtt.publish_report(self.config, {'status': 'success'})
+        self.assertEqual(run.call_args.args[0], ['/opt/sbwt/dist/SnapBeforeWatchTower', '--mqtt-publish-worker'])
+        self.assertNotIn('broker.example', ' '.join(run.call_args.args[0]))
+        request = json.loads(run.call_args.kwargs['input'])
+        self.assertEqual(request['config']['host'], 'broker.example')
 
     def test_success_reporting_respects_on_success_in_real_and_dry_run(self):
         with patch.object(mqtt, 'publish_report') as publish:
-            with mqtt.RunReporter(None, 'create', '0.0.8'):
+            with mqtt.RunReporter(None, 'create', '0.0.14'):
                 pass
             for dry_run in [False, True]:
-                with mqtt.RunReporter(self.config, 'create', '0.0.8', dry_run=dry_run):
+                with mqtt.RunReporter(self.config, 'create', '0.0.14', dry_run=dry_run):
                     pass
         publish.assert_not_called()
 
         enabled = dict(self.config, on_success=True)
         for dry_run in [False, True]:
             with self.subTest(dry_run=dry_run), patch.object(mqtt, 'publish_report') as publish:
-                with mqtt.RunReporter(enabled, 'create', '0.0.8', dry_run=dry_run):
+                with mqtt.RunReporter(enabled, 'create', '0.0.14', dry_run=dry_run):
                     pass
                 publish.assert_called_once()
                 payload = publish.call_args.args[1]
@@ -165,7 +182,7 @@ class MQTTTests(unittest.TestCase):
         for dry_run in [False, True]:
             with self.subTest(dry_run=dry_run), patch.object(mqtt, 'publish_report') as publish:
                 with self.assertRaisesRegex(RuntimeError, 'original failure'):
-                    with mqtt.RunReporter(self.config, 'create', '0.0.8', dry_run=dry_run):
+                    with mqtt.RunReporter(self.config, 'create', '0.0.14', dry_run=dry_run):
                         raise RuntimeError('original failure')
                 publish.assert_called_once()
                 payload = publish.call_args.args[1]
@@ -176,7 +193,7 @@ class MQTTTests(unittest.TestCase):
         error_logger = logging.Logger('isolated')
         with patch.object(mqtt, 'publish_report') as publish:
             with self.assertRaisesRegex(RuntimeError, 'original failure'):
-                with mqtt.RunReporter(self.config, 'delete', '0.0.8') as reporter:
+                with mqtt.RunReporter(self.config, 'delete', '0.0.14') as reporter:
                     reporter.attach(error_logger)
                     error_logger.error('Captured detail')
                     raise RuntimeError('original failure')
@@ -185,10 +202,20 @@ class MQTTTests(unittest.TestCase):
         self.assertIn('Captured detail', publish.call_args.args[1]['stderr'])
         self.assertEqual(error_logger.handlers, [])
 
+    def test_worker_failure_reason_is_logged_without_exception_text(self):
+        failure = mqtt.MQTTPublishError('ConnectionRefusedError')
+        with patch.object(mqtt, 'publish_report', side_effect=failure), \
+             self.assertLogs('SnapBeforeWatchTower', level='ERROR') as logs:
+            with mqtt.RunReporter(dict(self.config, on_success=True), 'create', '0.0.14', dry_run=True):
+                pass
+        combined = '\n'.join(logs.output)
+        self.assertIn('ConnectionRefusedError', combined)
+        self.assertNotIn('broker.example', combined)
+
     def test_publish_errors_preserve_original_outcome(self):
         for failure in [RuntimeError('secret'), subprocess.TimeoutExpired('worker', 15)]:
             with patch.object(mqtt, 'publish_report', side_effect=failure), self.assertLogs('SnapBeforeWatchTower', level='ERROR') as logs:
-                with mqtt.RunReporter(dict(self.config, on_success=True), 'create', '0.0.8'):
+                with mqtt.RunReporter(dict(self.config, on_success=True), 'create', '0.0.14'):
                     pass
             self.assertNotIn('secret', '\n'.join(logs.output))
 

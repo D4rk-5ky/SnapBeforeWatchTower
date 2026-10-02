@@ -1,8 +1,57 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.8. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.10. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.10 — 2026-10-02
+
+### Application code and notification delivery diagnostics
+
+- Bump the application version from 0.0.9 to 0.0.10 so `--version` and MQTT release metadata identify this notification-diagnostics release.
+- Preserve the 0.0.9 notification selection rules: a successful live or dry-run execution sends mail/MQTT only when that channel is enabled and its own `on_success=true`; failures still report whenever the channel is enabled regardless of `on_success`.
+- Add a startup notification-policy log line showing `dry_run`, whether mail/MQTT are enabled, and the two `on_success` values without logging recipients, broker credentials, or MQTT passwords. This makes it immediately visible whether success reporting was actually enabled in the loaded TOML.
+- Make `MailTo()` and `WasMailSent()` return a boolean transport result. A successful local `mail` exit returns `True`; a nonzero exit returns `False`, records the exit code/stderr, and lets the caller state explicitly that the success-mail attempt failed. Notification transport failure still does not replace the underlying ZFS/dry-run result.
+- Add explicit success-mail attempt logging before invoking the local mail command and explicit suppression logging when mail is enabled but `[mail].on_success=false`.
+- Add explicit MQTT publish-attempt logging before the bounded worker is launched and preserve the existing published confirmation message on success.
+- Add `MQTTPublishError`, a parent-side error that carries only a sanitized MQTT worker exception-class reason. The child process now writes only `type(exc).__name__` on failure, never exception text, credentials, or request JSON. The parent can therefore distinguish failures such as `ConnectionRefusedError` while keeping secrets out of logs.
+- Keep MQTT report failures and timeouts non-masking: they are logged, but they do not alter the original snapshot/dry-run exit outcome.
+- Correct the stale `requirements-mqtt.txt` comment: Paho is required whenever `[mqtt].enabled=true`, including dry-run reporting.
+- No ZFS snapshot creation/destruction, retention selection, continuation policy, Docker behavior, root enforcement, TOML setting, MQTT payload contract, QoS/retain/TLS/auth behavior, or Home Assistant automation behavior was changed.
+
+### Tests, documentation, and packaging
+
+- Add a full `main()` regression proving that one successful `dry_run=true` execution with both mail and MQTT enabled and both `on_success=true` attempts both success reports in the same run. This closes the coverage gap where 0.0.9 tested those channels only in separate unit paths.
+- Add regression coverage for mail helper delivery-result propagation, sanitized MQTT worker failure reasons, and credential-safe MQTT failure logging.
+- Update README.md with current notification delivery diagnostics and troubleshooting behavior; keep it free of release history.
+- Update `config.example.md`, `commented_code_map.md`, `requirements-mqtt.txt`, and `VERIFICATION.md` so documentation matches the actual dry-run notification behavior and diagnostics.
+- Package the complete project with the same 15 project paths as 0.0.9 and exclude caches, bytecode, backups, build artifacts, and temporary files.
+
+## 0.0.9 — 2026-10-02
+
+### Application code and failure-continuation behavior
+
+- Bump the application version from 0.0.8 to 0.0.9 so `--version` and MQTT release metadata identify this behavior release.
+- Add `[application].continue_on_missing_dataset` as a boolean continuation policy. `true` records an explicitly nonexistent configured ZFS dataset and continues with the next configured dataset; `false` stops immediately. Both paths remain overall failures and therefore use enabled mail/MQTT failure reporting.
+- Add `[application].continue_on_other_failures` as a separate boolean policy for any other checked per-dataset `zfs list` or `zfs destroy` `CommandError`. `true` records the failure and continues with the next configured dataset; `false` stops immediately.
+- Default both new settings to `true` when omitted so existing 0.0.8-style TOML files retain the previous missing-dataset continuation behavior and adopt the requested per-dataset list/destroy continuation behavior without becoming invalid.
+- Add `DatasetCommandFailuresError` to preserve an overall failure result after one or more `continue_on_other_failures=true` continuations. It records affected datasets and can include missing datasets already seen in the same run.
+- Add `is_checked_zfs_list_or_destroy_error()`, `remember_dataset_command_failure()`, and shared `handle_dataset_command_failure()` so create/delete loops use one classification/policy implementation rather than duplicating continuation logic.
+- Keep missing-dataset detection deliberately narrow: only ZFS stderr containing `dataset does not exist` or `no such pool or dataset` enters the missing-dataset policy.
+- Keep `continue_on_other_failures` deliberately narrow: it applies only to checked `zfs list`/`zfs destroy` failures raised through `run_cmd()`. Non-missing `zfs snapshot` failures remain immediately fatal, as do configuration, root, dataset-file/input, and other global failures.
+- Preserve end-of-run failure semantics for all recorded continuations. Remaining configured datasets and normal log cleanup run when continuation is enabled, then the process still raises a failure so MQTT reports `status=failure` and enabled mail sends failure mail.
+- Add dedicated failure-mail wording/subject for continued list/destroy failures and correct missing-dataset mail wording so `continue_on_missing_dataset=false` says the run stopped immediately instead of claiming later datasets were processed.
+- Keep dry-run notification behavior unchanged from 0.0.8: failures report when mail/MQTT is enabled regardless of `on_success`, while success reports still require the channel's `on_success=true`.
+- No snapshot naming, managed-snapshot selection, retain-count/age calculation, actual `zfs destroy` target selection, Docker digest policy, MQTT QoS/retain/TLS/auth/timeout behavior, mail command construction, or root enforcement was changed.
+
+### Configuration, documentation, tests, and packaging
+
+- Add both continuation settings to `config-example.toml` with the requested explanatory comments and explicit `true` values.
+- Update `README.md` and `config.example.md` for current 0.0.9 behavior, including defaults, exact continuation boundaries, final failure/report behavior, and the distinction between missing-dataset, list/destroy, snapshot-create, and global failures.
+- Update `commented_code_map.md` for every new class/function/policy path and the expanded regression suite.
+- Update MQTT test fixture version strings from 0.0.8 to 0.0.9.
+- Extend tests for both boolean settings, backward-compatible omitted-key defaults, invalid types, missing-dataset continue/stop behavior, `zfs list`/`zfs destroy` continue/stop behavior, failure mail, and proof that unrelated snapshot-create failures remain immediately fatal.
+- Refresh `VERIFICATION.md` and package the complete project as a clean ZIP with no Python bytecode/cache/build/temp artifacts.
 
 ## 0.0.8 — 2026-10-02
 

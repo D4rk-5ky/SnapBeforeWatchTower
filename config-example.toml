@@ -12,8 +12,8 @@ command = "create"
 
 # UTF-8 text file containing one ZFS dataset name per non-empty line.
 # Relative paths are resolved relative to this TOML file.
-# A dataset that ZFS reports as nonexistent is skipped so later datasets still run,
-# but the final run remains a failure and failure notifications identify it as missing.
+# Missing-dataset continuation is controlled by continue_on_missing_dataset below.
+# A missing dataset always makes the final run a failure.
 dataset_file = "datasets"
 
 # Age cutoff for managed snapshots and log groups.
@@ -30,6 +30,16 @@ retain_count = 10
 # Mail and MQTT use the same notification policy as real runs: failures are reported when
 # the channel is enabled, while successful dry-runs require that channel's on_success=true.
 dry_run = true
+
+# true = when ZFS explicitly reports a configured dataset as nonexistent, record the
+# failure and continue with the next configured dataset. false = stop immediately.
+# Either way, the final result is failure and enabled mail/MQTT reports that failure.
+continue_on_missing_dataset = true
+
+# true = for any other checked ZFS list/destroy command failure on one dataset,
+# record the failure and continue with the next configured dataset. false = stop
+# immediately. This does not make global/config/root/input failures recoverable.
+continue_on_other_failures = true
 
 [mail]
 # Optional mail notification feature. Set true to enable failure mail.

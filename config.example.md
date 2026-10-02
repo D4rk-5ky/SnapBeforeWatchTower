@@ -36,6 +36,8 @@ dataset_file = "datasets"
 older_than = "7d"
 retain_count = 10
 dry_run = true
+continue_on_missing_dataset = true
+continue_on_other_failures = true
 
 [mail]
 enabled = false
@@ -64,10 +66,12 @@ timeout = 15
 | Setting | Required | Meaning |
 | --- | --- | --- |
 | `command` | Yes | `"create"` captures Docker image digests, creates one managed ZFS snapshot per dataset, applies snapshot retention, then cleans old log groups. `"delete"` only applies snapshot retention and log cleanup. |
-| `dataset_file` | Yes | UTF-8 file containing one ZFS dataset name per non-empty line. Relative paths are resolved relative to the TOML file. If ZFS reports a configured dataset does not exist, that dataset is skipped so later datasets still run, but the final run remains failure and notifications identify the missing dataset(s). |
+| `dataset_file` | Yes | UTF-8 file containing one ZFS dataset name per non-empty line. Relative paths are resolved relative to the TOML file. Per-dataset continuation is controlled by the two settings below; recorded failures still make the final run fail. |
 | `older_than` | Yes | Strict age cutoff such as `"7d"`, `"2w"`, or `"1m"`. Months are treated as 30 days. The integer must be nonnegative. |
 | `retain_count` | Yes | Protect at least this many newest matching snapshots per dataset and newest log timestamp groups. Zero or a negative integer disables the count floor; age rules still apply. |
 | `dry_run` | Yes | When `true`, preview snapshot creation/destruction and old-log deletion. Snapshot listing and logging still occur and Docker digest capture is skipped. Mail/MQTT reporting follows the normal policy: failures report when the channel is enabled; successful dry-runs require that channel's `on_success=true`. |
+| `continue_on_missing_dataset` | Default `true` | When ZFS explicitly reports a configured dataset as nonexistent, `true` records the failure and continues with the next configured dataset; `false` stops immediately. Either way, the final run is failure and enabled mail/MQTT reports it. |
+| `continue_on_other_failures` | Default `true` | For any other checked per-dataset `zfs list` or `zfs destroy` failure, `true` records the failure and continues with the next configured dataset; `false` stops immediately. It does not make global/config/root/input or unrelated snapshot-create failures recoverable. |
 
 ## `[mail]` — optional
 
@@ -81,7 +85,7 @@ The whole `[mail]` table may be omitted; mail then defaults to disabled.
 
 ## `[mqtt]` — optional
 
-The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install `requirements-mqtt.txt` whenever MQTT is enabled, including dry-run, because failed dry-runs still publish failure reports.
+The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install `requirements-mqtt.txt` whenever MQTT is enabled, including dry-run, because successful dry-runs can publish when `on_success=true` and failed dry-runs still publish failure reports.
 
 | Setting | Required/default | Meaning |
 | --- | --- | --- |
@@ -111,8 +115,8 @@ tank/docker
 tank/appdata
 ```
 
-Blank lines are ignored. Dataset lines are stripped of surrounding whitespace, are not deduplicated, and do not support comments. Missing-dataset continuation is intentionally narrow: only ZFS stderr identifying a nonexistent dataset is continuable. Other ZFS failures still abort normally. The final MQTT contract remains `success`/`failure`; a missing-dataset run reports `failure` with exit code 1 and a specific reason in `error`. Every published payload also contains `dry_run=true|false` so consumers can distinguish preview and live reports.
+Blank lines are ignored. Dataset lines are stripped of surrounding whitespace, are not deduplicated, and do not support comments. Missing-dataset continuation is intentionally narrow: only explicit ZFS nonexistent-dataset stderr uses `continue_on_missing_dataset`. Other checked per-dataset `zfs list`/`zfs destroy` failures use `continue_on_other_failures`. Snapshot-create failures that are not the missing-dataset case, configuration errors, root failures, missing/unreadable input files, and other global failures remain immediately fatal. The final MQTT contract remains `success`/`failure`; any recorded continuation failure reports `failure` with exit code 1. Every published payload also contains `dry_run=true|false` so consumers can distinguish preview and live reports.
 
 ## Safe first run
 
-Keep `dry_run = true`, verify the logs and planned snapshot retention carefully, and review `SAFETY.md` before changing to a real run. Dry-run still performs real ZFS snapshot listing, so ZFS tools and access to the named datasets are still required. If mail or MQTT is enabled, dry-run can also send real notifications according to each channel's `on_success` setting.
+Keep `dry_run = true`, verify the logs and planned snapshot retention carefully, and review `SAFETY.md` before changing to a real run. Dry-run still performs real ZFS snapshot listing, so ZFS tools and access to the named datasets are still required. If mail or MQTT is enabled, dry-run can also send real notifications according to each channel's `on_success` setting. The run log prints the loaded notification policy and records each success-report delivery attempt/result so a transport failure can be distinguished from an `on_success=false` suppression.

@@ -1,0 +1,5 @@
+# Build-only dependencies for the standalone Linux PyInstaller executable.
+# paho-mqtt is explicitly installed and collected into the frozen build because
+# MQTT is an optional runtime feature and is imported dynamically.
+pyinstaller==6.22.3
+paho-mqtt==2.1.0

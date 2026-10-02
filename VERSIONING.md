@@ -1,8 +1,31 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.10. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.11. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.11 — 2026-10-02
+
+### PyInstaller standalone build
+
+- Bump the application version from 0.0.10 to 0.0.11 so source and frozen `--version`/MQTT metadata identify this build-support release.
+- Add `SnapBeforeWatchTower.spec` as a one-file PyInstaller recipe and explicitly collect every `paho` submodule so the optional MQTT implementation is present in frozen builds even though Paho is imported dynamically.
+- Add `requirements-build.txt` with pinned `pyinstaller==6.22.3` and `paho-mqtt==2.1.0` build dependencies. The source-only MQTT requirement remains separately documented in `requirements-mqtt.txt`.
+- Add `build-pyinstaller.sh`. It creates/uses `.venv-build`, installs the build requirements, removes stale `build/` and `dist/` output, builds `dist/SnapBeforeWatchTower`, then smoke-tests the frozen executable with `--help` and `--version`.
+- Add `dist/README.md` to document the required final output path. Update `.gitignore` so generated `dist/*` artifacts remain ignored while that documentation file stays trackable.
+- Add `runtime_base_dir()` so a PyInstaller one-file executable stores persistent root-run logs beside the executable instead of inside PyInstaller's temporary extraction directory. Source execution keeps the existing script-directory log location; non-root execution keeps the `/tmp/SnapBeforeWatchTower` fallback.
+- Make frozen MQTT publishing re-execute the same standalone binary with a private `--mqtt-publish-worker` switch. The private worker is accepted only when `sys.frozen` is set; normal source/public CLI behavior remains unchanged. MQTT configuration, payload, and credentials remain on stdin rather than argv.
+- Keep the source-mode MQTT worker unchanged: source runs continue to launch `mqtt_report.py --publish` with the same bounded timeout and secret-safe exception-class diagnostics.
+- Preserve all ZFS snapshot/retention, dry-run, continuation, mail/MQTT success/failure selection, root-enforcement, and configuration behavior.
+
+### Tests, documentation, and packaging
+
+- Add regression coverage for frozen runtime-directory selection, the frozen private MQTT-worker entry point, and frozen MQTT child-process argv/stdin behavior.
+- Update the existing test fixtures/version assertions to 0.0.11; the offline regression suite is now 49 tests.
+- Update README.md and `config.example.md` with source-vs-standalone dependency guidance, build instructions, the `dist/SnapBeforeWatchTower` path, frozen log location, and frozen MQTT worker behavior. README remains current-usage documentation only.
+- Update `commented_code_map.md` for every new function/test/build file and explain why the frozen worker/log-directory changes are required.
+- Keep build caches, `.venv-build`, bytecode, and generated PyInstaller `build/` output out of the final source/release archive.
+- The hosted build sandbox used for this release could not resolve/reach PyPI and did not have PyInstaller/Paho preinstalled, so the actual Linux binary could not be generated here. The release contains the complete pinned build recipe and required `dist/` target layout; this limitation is recorded in `VERIFICATION.md` rather than claiming an unperformed binary test.
 
 ## 0.0.10 — 2026-10-02
 

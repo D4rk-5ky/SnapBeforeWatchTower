@@ -11,7 +11,7 @@ The application does **not** start Watchtower, update containers, restore data, 
 - Root privileges for normal operation, including dry-run.
 - Docker CLI/daemon for image-digest capture during a real `create` run. Docker is not invoked for `delete` or dry-run.
 - Optional mail notifications require a local `mail` program that supports `-s` and `--attach`.
-- Optional MQTT reporting requires `paho-mqtt` from `requirements-mqtt.txt` whenever `[mqtt].enabled = true`, including dry-run because failure reports may still need to publish.
+- Optional MQTT reporting in **source mode** requires `paho-mqtt` from `requirements-mqtt.txt` whenever `[mqtt].enabled = true`, including dry-run because failure reports may still need to publish. The standalone PyInstaller executable bundles Paho and does not need a separate Python/Paho install on the target host.
 
 ## Setup
 
@@ -27,6 +27,32 @@ nano datasets
 `config.toml` is ignored by `.gitignore` because it can contain an MQTT password.
 
 The supplied configuration example starts with `dry_run = true`, mail disabled, and MQTT disabled. The supplied `datasets.example.txt` is a harmless format example and should be copied/edited into the `dataset_file` named by your TOML. These defaults are intentional so a copied example does not immediately destroy snapshots or send notifications.
+
+## Standalone PyInstaller build
+
+A reproducible PyInstaller build is included. Build dependencies are isolated from the runtime/source dependency file:
+
+```bash
+./build-pyinstaller.sh
+```
+
+The script creates a private `.venv-build`, installs the pinned packages from `requirements-build.txt`, removes previous `build/` and `dist/` outputs, then builds and verifies the executable with `--help` and `--version`. The final executable path is:
+
+```text
+dist/SnapBeforeWatchTower
+```
+
+`SnapBeforeWatchTower.spec` explicitly collects all `paho` submodules so MQTT support is present even though Paho is imported dynamically. The executable also contains the Python interpreter and standard-library modules used by the application. It still relies on normal host tools such as `zfs`, `docker`, and `mail` because those are external system commands, not Python modules.
+
+Run the standalone build exactly like the source version:
+
+```bash
+./dist/SnapBeforeWatchTower --help
+./dist/SnapBeforeWatchTower --version
+sudo ./dist/SnapBeforeWatchTower -c config.toml
+```
+
+PyInstaller output is platform/architecture specific. Build on the Linux architecture on which you intend to run the executable. In frozen mode the MQTT timeout worker safely re-executes the same `dist/SnapBeforeWatchTower` binary using a private internal switch while keeping broker configuration and credentials on stdin rather than command-line arguments. Persistent root-run logs are written to `dist/logs/`; non-root execution retains the existing `/tmp/SnapBeforeWatchTower` fallback.
 
 ## Command-line interface
 
@@ -104,7 +130,7 @@ When `enabled = true`, `recipient` must be non-empty. Failure mail is always ena
 
 ### `[mqtt]` — optional
 
-Install the optional dependency with the same Python interpreter used to run the application:
+When running from Python source, install the optional dependency with the same interpreter used to run the application:
 
 ```bash
 python3 -m pip install -r requirements-mqtt.txt
@@ -130,7 +156,7 @@ key_file = ""
 timeout = 15
 ```
 
-When `enabled = false`, MQTT reporting is disabled and `paho-mqtt` is not required. Unsupported MQTT keys are still rejected.
+When `enabled = false`, MQTT reporting is disabled. In source mode `paho-mqtt` is then not required; the standalone executable already contains it. Unsupported MQTT keys are still rejected.
 
 When `enabled = true`, MQTT failure reports are always attempted, including during dry-run. `on_success = true` additionally publishes success reports for both real and dry-run executions; `on_success = false` suppresses only successful MQTT reports. Because a dry-run can still fail and must then report that failure, `paho-mqtt` is required whenever MQTT is enabled. Before a publish attempt the run log now says that the final MQTT report is being attempted; success is logged as published. If the bounded worker fails, the parent logs a credential-safe exception class such as `ConnectionRefusedError` instead of silently reducing the failure to a generic no-message symptom.
 

@@ -21,7 +21,12 @@ Reference commands:
 ```bash
 python3 SnapBeforeWatchTower.py --help
 python3 SnapBeforeWatchTower.py --version
+./dist/SnapBeforeWatchTower --help
+./dist/SnapBeforeWatchTower --version
+sudo ./dist/SnapBeforeWatchTower -c config.toml
 ```
+
+The PyInstaller build is produced by `./build-pyinstaller.sh` at `dist/SnapBeforeWatchTower`. It bundles Python plus Paho MQTT; external host commands such as ZFS, Docker, and `mail` remain system requirements.
 
 There are no separate public flags for command mode, datasets, retention, mail, MQTT, or dry-run. Those runtime settings belong in TOML so one file describes the whole job.
 

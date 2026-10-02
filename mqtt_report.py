@@ -148,8 +148,15 @@ def build_payload(config, command, version, exc, errors, run_id, dry_run=False):
 
 def publish_report(config, payload):
     """Use a killable worker to bound DNS/connect/publish time; keep credentials off argv."""
+    if getattr(sys, 'frozen', False):
+        # A frozen executable cannot launch mqtt_report.py directly because source
+        # modules live inside the bundle. Re-execute the app with a private worker
+        # switch instead. Configuration and credentials stay on stdin, not argv.
+        worker_command = [sys.executable, '--mqtt-publish-worker']
+    else:
+        worker_command = [sys.executable, '-B', str(Path(__file__).resolve()), '--publish']
     result = subprocess.run(
-        [sys.executable, '-B', str(Path(__file__).resolve()), '--publish'],
+        worker_command,
         input=json.dumps({'config': config, 'payload': payload}),
         text=True, capture_output=True, timeout=config['timeout'],
     )

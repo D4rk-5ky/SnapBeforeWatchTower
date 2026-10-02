@@ -429,6 +429,20 @@ class BehaviorTests(unittest.TestCase):
         run.assert_not_called()
         popen.assert_not_called()
 
+    def test_runtime_base_dir_uses_executable_directory_when_frozen(self):
+        source_dir = app.runtime_base_dir()
+        self.assertEqual(source_dir, str(ROOT))
+        with patch.object(app.sys, 'frozen', True, create=True), \
+             patch.object(app.sys, 'executable', '/opt/sbwt/dist/SnapBeforeWatchTower'):
+            self.assertEqual(app.runtime_base_dir(), '/opt/sbwt/dist')
+
+    def test_frozen_private_mqtt_worker_entrypoint_bypasses_public_cli(self):
+        with patch.object(app.sys, 'frozen', True, create=True), \
+             patch.object(sys, 'argv', ['SnapBeforeWatchTower', '--mqtt-publish-worker']), \
+             patch.object(app, 'mqtt_worker') as worker:
+            app.main()
+        worker.assert_called_once_with()
+
     def test_main_create_order_and_docker_failure_continuation(self):
         with temporary_directory() as folder:
             datasets = Path(folder) / 'datasets.txt'
@@ -586,7 +600,7 @@ class CLITests(unittest.TestCase):
     def test_version_exits_without_config(self):
         result = self.run_cli('--version')
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
-        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.10')
+        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.11')
         self.assertEqual(result.stderr, '')
 
     def test_config_is_required_and_retired_operational_flags_are_rejected(self):

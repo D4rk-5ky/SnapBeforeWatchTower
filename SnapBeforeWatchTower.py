@@ -12,9 +12,9 @@ from typing import List, Tuple, Optional
 import tempfile
 import tomllib
 from pathlib import Path
-from mqtt_report import RunReporter, validate_config as validate_mqtt_config
+from mqtt_report import RunReporter, validate_config as validate_mqtt_config, worker as mqtt_worker
 
-__version__ = "0.0.10"
+__version__ = "0.0.11"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -112,6 +112,13 @@ def choose_log_folder(preferred_root_folder: str, fallback_folder: str | None = 
 
     os.makedirs(fallback_folder, exist_ok=True)
     return fallback_folder
+
+def runtime_base_dir() -> str:
+    """Return the persistent application directory for source and frozen execution."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
 
 def pick_log_folder(script_log_folder: str, tmp_name: str = "SnapBeforeWatchTower") -> str:
     """
@@ -768,6 +775,19 @@ def load_app_config(path):
 
 
 def main():
+    # Private entry point used only by the frozen PyInstaller executable for the
+    # bounded MQTT publish worker. Keeping configuration JSON on stdin ensures
+    # broker credentials never appear in the process command line.
+    if getattr(sys, "frozen", False) and sys.argv[1:] == ["--mqtt-publish-worker"]:
+        try:
+            mqtt_worker()
+        except Exception as exc:
+            # Match mqtt_report.py's source-mode worker contract: expose only the
+            # exception class, never exception text, credentials, or request JSON.
+            sys.stderr.write(type(exc).__name__)
+            raise SystemExit(1)
+        return
+
     parser = argparse.ArgumentParser(
         usage='%(prog)s -c CONFIG',
         description='Run SnapBeforeWatchTower using one TOML configuration file.',
@@ -796,8 +816,10 @@ def run(args, reporter):
 
     log_date = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
     # Pick log folder: root-only folder if root, otherwise /tmp fallback
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    preferred_log_folder = os.path.join(SCRIPT_DIR, "logs")
+    # In a PyInstaller one-file build, __file__ points into the temporary bundle
+    # extraction directory. runtime_base_dir() keeps persistent logs beside the
+    # executable while preserving the existing source-mode location.
+    preferred_log_folder = os.path.join(runtime_base_dir(), "logs")
     log_folder = pick_log_folder(preferred_log_folder)
 
     # Create separate loggers for main logs and error logs

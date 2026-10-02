@@ -2,19 +2,28 @@
 
 SnapBeforeWatchTower is configured through a single TOML file. This Markdown file is a human-readable reference only; the application does **not** load it. The loadable example is `config-example.toml`.
 
-## Public command-line option
+## Public command-line flags
 
-There is one public command-line option:
+Normal operation:
 
 ```bash
 sudo python3 SnapBeforeWatchTower.py -c config.toml
 ```
 
-| Option | Required | Meaning |
+| Flag | Required | Meaning |
 | --- | --- | --- |
-| `-c CONFIG` | Yes | Path to the TOML configuration file. Relative file paths *inside* the TOML file are resolved relative to the TOML file itself. |
+| `-c CONFIG` | Yes for normal operation | Path to the TOML configuration file. Relative file paths *inside* the TOML file are resolved relative to the TOML file itself. |
+| `-h`, `--help` | No | Show complete CLI help and exit before configuration loading or operational work. |
+| `--version` | No | Show the application version and exit before configuration loading or operational work. |
 
-There are no separate public flags for command mode, datasets, retention, mail, MQTT, dry-run, help, or version. Those runtime settings belong in TOML so one file describes the whole job.
+Reference commands:
+
+```bash
+python3 SnapBeforeWatchTower.py --help
+python3 SnapBeforeWatchTower.py --version
+```
+
+There are no separate public flags for command mode, datasets, retention, mail, MQTT, or dry-run. Those runtime settings belong in TOML so one file describes the whole job.
 
 ## Complete TOML example
 
@@ -35,6 +44,7 @@ on_success = false
 
 [mqtt]
 enabled = false
+on_success = false
 host = "mqtt.example.local"
 port = 1883
 topic = "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status"
@@ -57,7 +67,7 @@ timeout = 15
 | `dataset_file` | Yes | UTF-8 file containing one ZFS dataset name per non-empty line. Relative paths are resolved relative to the TOML file. If ZFS reports a configured dataset does not exist, that dataset is skipped so later datasets still run, but the final run remains failure and notifications identify the missing dataset(s). |
 | `older_than` | Yes | Strict age cutoff such as `"7d"`, `"2w"`, or `"1m"`. Months are treated as 30 days. The integer must be nonnegative. |
 | `retain_count` | Yes | Protect at least this many newest matching snapshots per dataset and newest log timestamp groups. Zero or a negative integer disables the count floor; age rules still apply. |
-| `dry_run` | Yes | When `true`, preview snapshot creation/destruction and old-log deletion. Snapshot listing and logging still occur, configured email can still be sent, Docker digest capture is skipped, and MQTT publishing is suppressed. |
+| `dry_run` | Yes | When `true`, preview snapshot creation/destruction and old-log deletion. Snapshot listing and logging still occur and Docker digest capture is skipped. Mail/MQTT reporting follows the normal policy: failures report when the channel is enabled; successful dry-runs require that channel's `on_success=true`. |
 
 ## `[mail]` — optional
 
@@ -67,15 +77,16 @@ The whole `[mail]` table may be omitted; mail then defaults to disabled.
 | --- | --- | --- |
 | `enabled` | Default `false` | Enables failure mail. When false, the other mail values are ignored for runtime delivery. |
 | `recipient` | Required when enabled | Recipient passed to the local `mail` command. Must be a non-empty string when mail is enabled. |
-| `on_success` | Default `false` | Also sends a success mail. Failure mail remains enabled whenever mail is enabled. |
+| `on_success` | Default `false` | Also sends success mail for real and dry-run executions. Failure mail remains enabled whenever mail is enabled, regardless of this setting. |
 
 ## `[mqtt]` — optional
 
-The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install `requirements-mqtt.txt` only when real MQTT publishing is enabled.
+The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install `requirements-mqtt.txt` whenever MQTT is enabled, including dry-run, because failed dry-runs still publish failure reports.
 
 | Setting | Required/default | Meaning |
 | --- | --- | --- |
-| `enabled` | Default `false` | Enables the final MQTT JSON status report. Disabled mode does not require broker fields or Paho. |
+| `enabled` | Default `false` | Enables MQTT reporting. Disabled mode does not require broker fields or Paho. When enabled, failures are always reported in both real and dry-run executions. |
+| `on_success` | Default `false` | Also publishes success reports for real and dry-run executions. When false, only successful MQTT reports are suppressed; failure reports still publish. |
 | `host` | Required when enabled | MQTT broker hostname or IP address. |
 | `port` | Default `1883`, or `8883` when TLS is enabled and the key is omitted | Broker TCP port, integer 1–65535. |
 | `topic` | Required when enabled | Publish topic. `+` and `#` wildcards are rejected. It must match the Home Assistant MQTT trigger topic. |
@@ -100,8 +111,8 @@ tank/docker
 tank/appdata
 ```
 
-Blank lines are ignored. Dataset lines are stripped of surrounding whitespace, are not deduplicated, and do not support comments. Missing-dataset continuation is intentionally narrow: only ZFS stderr identifying a nonexistent dataset is continuable. Other ZFS failures still abort normally. The final MQTT contract remains `success`/`failure`; a missing-dataset run reports `failure` with exit code 1 and a specific reason in `error`.
+Blank lines are ignored. Dataset lines are stripped of surrounding whitespace, are not deduplicated, and do not support comments. Missing-dataset continuation is intentionally narrow: only ZFS stderr identifying a nonexistent dataset is continuable. Other ZFS failures still abort normally. The final MQTT contract remains `success`/`failure`; a missing-dataset run reports `failure` with exit code 1 and a specific reason in `error`. Every published payload also contains `dry_run=true|false` so consumers can distinguish preview and live reports.
 
 ## Safe first run
 
-Keep `dry_run = true`, verify the logs and planned snapshot retention carefully, and review `SAFETY.md` before changing to a real run. Dry-run still performs real ZFS snapshot listing, so ZFS tools and access to the named datasets are still required.
+Keep `dry_run = true`, verify the logs and planned snapshot retention carefully, and review `SAFETY.md` before changing to a real run. Dry-run still performs real ZFS snapshot listing, so ZFS tools and access to the named datasets are still required. If mail or MQTT is enabled, dry-run can also send real notifications according to each channel's `on_success` setting.

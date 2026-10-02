@@ -73,10 +73,11 @@ class BehaviorTests(unittest.TestCase):
             config = write_config(
                 folder,
                 mail='\n[mail]\nenabled = true\nrecipient = "test@example.com"\non_success = true\n',
-                mqtt='\n[mqtt]\nenabled = true\nhost = "broker"\ntopic = "test/status"\nusername = "user"\npassword = "secret"\n',
+                mqtt='\n[mqtt]\nenabled = true\nhost = "broker"\ntopic = "test/status"\nusername = "user"\npassword = "secret"\non_success = true\n',
                 dry_run=True,
             )
-            args, mqtt_config = app.load_app_config(config)
+            with patch('mqtt_report.importlib.import_module'):
+                args, mqtt_config = app.load_app_config(config)
         self.assertEqual(args.command, 'create')
         self.assertEqual(args.file, str((Path(folder) / 'datasets.txt').resolve()))
         self.assertEqual(args.older_than, dt.timedelta(days=7))
@@ -85,6 +86,7 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(args.send_mail, 'test@example.com')
         self.assertTrue(args.mail_on_success)
         self.assertEqual(mqtt_config['password'], 'secret')
+        self.assertTrue(mqtt_config['on_success'])
 
     def test_toml_optional_sections_default_disabled(self):
         with temporary_directory() as folder:
@@ -313,6 +315,51 @@ class BehaviorTests(unittest.TestCase):
             self.assertEqual([c[0] for c in events.mock_calls], ['capture', 'create', 'retention', 'create', 'retention', 'cleanup'])
             self.assertEqual([c.args[2] for c in events.create.call_args_list], ['tank/data', 'tank/other'])
 
+    def test_dry_run_success_mail_respects_on_success(self):
+        with temporary_directory() as folder:
+            dataset_file = Path(folder) / 'datasets.txt'
+            dataset_file.write_text('tank/data\n', encoding='utf-8')
+            for on_success in [False, True]:
+                args = argparse.Namespace(
+                    command='create', file=str(dataset_file), older_than=dt.timedelta(days=7), retain_count=1,
+                    send_mail='test@example.com', mail_on_success=on_success, dry_run=True,
+                )
+                mail = Mock()
+                err_path = str(Path(folder) / f'run-{on_success}.err')
+                with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                     patch.object(app, 'pick_log_folder', return_value=folder), \
+                     patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                     patch.object(app, 'save_docker_image_digests'), \
+                     patch.object(app, 'create_snapshot'), \
+                     patch.object(app, 'delete_old_snapshots'), \
+                     patch.object(app, 'delete_old_files'), \
+                     patch.object(app, 'MailTo', mail):
+                    app.run(args, Mock())
+                if on_success:
+                    mail.assert_called_once()
+                    self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower DRY-RUN SUCCESS - logs attached')
+                    self.assertIn('dry-run completed successfully', mail.call_args.kwargs['intro'])
+                else:
+                    mail.assert_not_called()
+
+    def test_dry_run_failure_mail_is_sent_even_when_on_success_is_false(self):
+        with temporary_directory() as folder:
+            args = argparse.Namespace(
+                command='create', file=str(Path(folder) / 'missing-datasets.txt'), older_than=dt.timedelta(days=7),
+                retain_count=1, send_mail='test@example.com', mail_on_success=False, dry_run=True,
+            )
+            mail = Mock()
+            err_path = str(Path(folder) / 'run.err')
+            with patch.object(app.os, 'geteuid', return_value=0, create=True), \
+                 patch.object(app, 'pick_log_folder', return_value=folder), \
+                 patch.object(app, 'setup_logger', return_value=(self.log, self.err, err_path)), \
+                 patch.object(app, 'MailTo', mail):
+                with self.assertRaises(FileNotFoundError):
+                    app.run(args, Mock())
+            mail.assert_called_once()
+            self.assertEqual(mail.call_args.kwargs['subject'], 'SnapBeforeWatchTower DRY-RUN FAILED - logs attached')
+            self.assertIn('dry-run failed', mail.call_args.kwargs['intro'])
+
     def test_mail_options_precede_recipient(self):
         proc = Mock(returncode=0)
         proc.communicate.return_value = (None, b'')
@@ -322,13 +369,29 @@ class BehaviorTests(unittest.TestCase):
 
 
 class CLITests(unittest.TestCase):
-    """Verify that -c CONFIG is the only public command-line option."""
+    """Verify the public config/help/version interface and rejection of retired operational flags."""
 
     def run_cli(self, *args):
         return subprocess.run([sys.executable, '-B', str(ROOT / 'SnapBeforeWatchTower.py'), *args], capture_output=True, text=True)
 
-    def test_only_config_flag_is_accepted(self):
-        for args in [[], ['-h'], ['--version'], ['--config', 'x.toml'], ['-f', 'datasets'], ['-c', 'x.toml', '--dry-run']]:
+    def test_help_describes_all_public_flags(self):
+        for flag in ['-h', '--help']:
+            result = self.run_cli(flag)
+            self.assertEqual(result.returncode, 0, (flag, result.stdout, result.stderr))
+            self.assertIn('-c CONFIG', result.stdout)
+            self.assertIn('-h, --help', result.stdout)
+            self.assertIn('--version', result.stdout)
+            self.assertIn('Operational settings', result.stdout)
+            self.assertEqual(result.stderr, '')
+
+    def test_version_exits_without_config(self):
+        result = self.run_cli('--version')
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.8')
+        self.assertEqual(result.stderr, '')
+
+    def test_config_is_required_and_retired_operational_flags_are_rejected(self):
+        for args in [[], ['--config', 'x.toml'], ['-f', 'datasets'], ['-c', 'x.toml', '--dry-run']]:
             result = self.run_cli(*args)
             self.assertEqual(result.returncode, 2, (args, result.stdout, result.stderr))
             self.assertNotIn('Traceback', result.stderr)

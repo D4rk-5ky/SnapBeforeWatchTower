@@ -1,6 +1,8 @@
 # SnapBeforeWatchTower configuration example.
 # Copy this file to config.toml, edit it, then run:
 #   sudo python3 SnapBeforeWatchTower.py -c config.toml
+# CLI reference: python3 SnapBeforeWatchTower.py --help
+# Version:       python3 SnapBeforeWatchTower.py --version
 # Relative file paths in this TOML are resolved relative to this TOML file.
 
 [application]
@@ -24,8 +26,9 @@ older_than = "7d"
 retain_count = 10
 
 # When true, preview ZFS snapshot creation/destruction and old-log deletion.
-# Dry-run still lists ZFS snapshots, writes run logs, and can send configured mail.
-# MQTT configuration is validated, but MQTT publishing is suppressed in dry-run mode.
+# Dry-run still lists ZFS snapshots and writes run logs; Docker digest capture is skipped.
+# Mail and MQTT use the same notification policy as real runs: failures are reported when
+# the channel is enabled, while successful dry-runs require that channel's on_success=true.
 dry_run = true
 
 [mail]
@@ -35,12 +38,17 @@ enabled = false
 # Recipient passed to the local `mail` command when mail is enabled.
 recipient = "you@example.com"
 
-# When true, also send a success mail. Failure mail remains enabled whenever mail is enabled.
+# When true, also send success mail for both real and dry-run executions.
+# Failure mail is always sent when mail is enabled, regardless of this setting.
 on_success = false
 
 [mqtt]
 # Optional final MQTT JSON status report. Set true to enable MQTT reporting.
 enabled = false
+
+# When true, also publish success reports for both real and dry-run executions.
+# Failure reports are always published when MQTT is enabled, regardless of this setting.
+on_success = false
 
 # MQTT broker hostname or IP address.
 host = "mqtt.example.local"

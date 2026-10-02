@@ -1,66 +1,96 @@
-# Release verification — 0.0.6
+# Release verification — 0.0.8
 
-Date: 2026-09-25
+Date: 2026-10-02
 
 ## Result
 
 | Check | Result |
 | --- | --- |
-| Version increment | PASS — 0.0.5 -> 0.0.6 |
-| Python unit/regression suite | PASS — 32/32 tests |
-| Python compile checks | PASS — `SnapBeforeWatchTower.py`, `mqtt_report.py`, `tests/test_app.py`, and `tests/test_mqtt.py` compiled with `compile()` without generating bytecode |
-| Public CLI surface | PASS — `SnapBeforeWatchTower.py` still accepts only `-c CONFIG` as the public option |
-| Retired public flags/help/version | PASS — missing args, `-h`, `--version`, `--config`, `-f`, and CLI `--dry-run` remain rejected |
-| TOML example parse | PASS — `config-example.toml` loads through the real application loader as version 0.0.6 with its safe `dry_run=true`, mail-disabled, MQTT-disabled defaults |
-| TOML documentation coverage | PASS — all 21 setting assignments in `config-example.toml` are represented in README.md and `config.example.md` |
-| commented_code_map symbol coverage | PASS — every Python class/function/method in the application and tests is represented |
-| Missing-dataset classifier | PASS — exact `dataset does not exist` and alternate `no such pool or dataset` stderr classify as missing; unrelated `permission denied` does not |
-| Create-mode continuation | PASS — mocked missing first dataset is skipped, following dataset is processed, retention runs for the valid dataset, log cleanup runs, and the overall run raises `MissingDatasetsError` |
-| Delete-mode continuation | PASS — mocked missing first dataset is skipped, following dataset is still processed, cleanup runs, and the final run fails |
-| Failure mail behavior | PASS — a missing-dataset run with mail enabled selects `SnapBeforeWatchTower FAILED - missing dataset`, includes the dataset in the intro, and does not send success mail even when `on_success=true` |
-| Unrelated ZFS error safety | PASS — mocked permission failure still aborts immediately and does not continue to later datasets or cleanup |
-| MQTT/Home Assistant contract | PASS — missing datasets still produce only the existing `status="failure"`, `exit_code=1`, `warning=false`; the existing `error` field contains the missing dataset(s) and `dataset does not exist` reason |
-| Home Assistant automation compatibility | PASS — supplied automation is byte-for-byte unchanged from 0.0.5 and already branches on `success`/`failure` while rendering `report_error` and `report_stderr` |
-| Disclaimer preservation | PASS — `SAFETY.md` is byte-for-byte unchanged from 0.0.5 (SHA-256 `db2b6cd19af5a6a1f3683b8a88a77031ba68c7168def5632801fa006ad5207ee`) |
-| Original-project manifest preservation | PASS — all 15 file paths from the originally supplied archive are retained; no project path was removed or added |
-| Cache/build/temp exclusions | PASS — no `__pycache__`, `.pyc`, `.pyo`, pytest cache, build/dist, backup, or temporary artifacts remain in the project tree |
+| Version increment | PASS — 0.0.7 -> 0.0.8 |
+| Python unit/regression suite | PASS — 37/37 tests |
+| Python compile checks | PASS — `SnapBeforeWatchTower.py`, `mqtt_report.py`, `tests/test_app.py`, and `tests/test_mqtt.py` compile successfully |
+| Public CLI help | PASS — both `-h` and `--help` exit 0 and document `-c CONFIG`, `-h`/`--help`, `--version`, and that operational settings remain TOML-only |
+| Public CLI version | PASS — `--version` exits 0 without configuration and prints `SnapBeforeWatchTower.py 0.0.8` |
+| Operational CLI boundary | PASS — missing `-c`, retired `--config`, and retired CLI `--dry-run` remain rejected with exit code 2 |
+| TOML example parse | PASS — `config-example.toml` loads through the real application loader with `command=create`, `dry_run=true`, mail disabled, and MQTT disabled |
+| TOML documentation coverage | PASS — all 22 assignments in `config-example.toml` are represented in both README.md and `config.example.md` |
+| Notification-policy regression coverage | PASS — mail and MQTT success reports are gated independently by `on_success`; enabled failure reporting remains active with `on_success=false`; both rules are tested in dry-run, and MQTT is tested in real runs too |
+| MQTT dry-run report metadata | PASS — published MQTT payloads include `dry_run=true|false`; dry-run is no longer globally suppressed |
+| MQTT dependency boundary | PASS — enabled MQTT requires `paho-mqtt` in both real and dry-run configuration validation because dry-run failures can publish |
+| Home Assistant YAML parse | PASS — supplied automation parses as YAML and reads `dry_run` for `DRY-RUN`/`LIVE` notification mode text |
+| README current-behavior check | PASS — README contains no release-version history/version number and documents only the current interface/behavior |
+| commented_code_map symbol coverage | PASS — every current Python class/function/method name in the application and tests is represented |
+| Requested disclaimer | PASS — the supplied disclaimer/liability text is present verbatim in both README.md and `SAFETY.md` |
+| `.gitignore` example handling | PASS — private `config.toml` and `datasets` remain ignored; `config-example.toml`, `config.example.md`, and `datasets.example.txt` are trackable |
+| Original-project manifest preservation | PASS — all 15 file paths from the supplied 0.0.7 archive are retained; no project path was removed or added |
+| Cache/build/temp exclusions | PASS — final package contains no `__pycache__`, `.pyc`, `.pyo`, `.pytest_cache`, build/dist, backup, or temporary artifacts |
+| ZIP integrity and fresh extraction | PASS — `unzip -t` reports no errors and a fresh extraction is byte-for-byte equal to the prepared 0.0.8 project tree |
+| Final ZIP manifest vs supplied archive | PASS — both contain the same 15 project file paths; no forbidden cache/build/temp entries are present |
 
-## Missing-dataset behavior verified
+## Notification behavior verified
 
-The supplied example error is generated by the same command path used by the application:
+Mail and MQTT now follow the same selection policy while remaining independently configurable:
+
+| Channel configuration | Successful live run | Successful dry-run | Failed live run | Failed dry-run |
+| --- | --- | --- | --- | --- |
+| `enabled=false` | no report | no report | no report | no report |
+| `enabled=true`, `on_success=false` | no success report | no success report | failure report | failure report |
+| `enabled=true`, `on_success=true` | success report | success report | failure report | failure report |
+
+`[mail].on_success` affects only mail. `[mqtt].on_success` affects only MQTT. Mail dry-run subjects/introduction text identify the run as dry-run. MQTT payloads always include a `dry_run` boolean when a report is published.
+
+The supplied Home Assistant automation keeps the existing `status=success` / `status=failure` branching and adds visible `Mode: DRY-RUN` or `Mode: LIVE` text from the payload.
+
+## CLI behavior verified
+
+Normal operation remains:
 
 ```text
-zfs list -H -t snapshot -o name DATASET
+sudo python3 SnapBeforeWatchTower.py -c config.toml
 ```
 
-`run_cmd()` captures ZFS stderr and raises `CommandError` on a nonzero return code. In `create` mode, `zfs snapshot DATASET@SNAPSHOT` can instead fail through `subprocess.CalledProcessError`. Version 0.0.6 inspects the captured `stderr` from either exception type rather than scraping the `.err` file afterward.
-
-Only known absent-dataset wording is continuable:
+Informational interfaces remain:
 
 ```text
-dataset does not exist
-no such pool or dataset
+python3 SnapBeforeWatchTower.py --help
+python3 SnapBeforeWatchTower.py --version
 ```
 
-When one of those messages is seen for a configured dataset, the script logs that the dataset is missing, skips the remainder of work for that dataset, and continues with the next configured dataset. After remaining datasets and normal log cleanup finish, `MissingDatasetsError` is raised so the process remains a failure.
+`--help` and `--version` are handled by `argparse` before `load_app_config()` is called, so they do not require a TOML file and do not enter logging, root enforcement, ZFS, Docker, mail, or MQTT operation paths.
 
-This means a typical final MQTT error becomes similar to:
+Operational settings were intentionally **not** restored as command-line flags. Create/delete mode, dataset file, retention, dry-run, mail, and MQTT remain configured in TOML.
+
+## Destructive safety behavior intentionally unchanged
+
+Version 0.0.8 changes notification/report selection only. It does not change snapshot naming, retention selection, count-floor behavior, age cutoff behavior, managed snapshot filtering, `zfs destroy` selection, Docker digest capture semantics, root enforcement, missing-dataset continuation/final-failure behavior, mail transport command construction, MQTT QoS/retain/TLS/auth/timeout behavior, broker credential transport, or dry-run mutation suppression.
+
+Dry-run still suppresses snapshot creation, snapshot destruction, old-log deletion, and Docker digest collection while retaining real ZFS snapshot listing for an accurate retention preview. The notification transports are intentionally **not** suppressed in dry-run anymore; they follow the same success/failure policy shown above.
+
+The application can still perform destructive ZFS snapshot deletion and managed log-file deletion during real runs. The requested disclaimer remains included in README.md and `SAFETY.md`; the example configuration still defaults to `dry_run = true` with mail and MQTT disabled.
+
+## `.gitignore` behavior verified
+
+Version 0.0.8 preserves the corrected rules from 0.0.7:
 
 ```text
-Missing ZFS dataset (dataset does not exist): BackUpAndSync/Pictures only
+config*
+!config-example.toml
+!config.example.md
+
+!datasets.example.txt
 ```
 
-The JSON schema itself is unchanged. Home Assistant therefore continues to use the existing failure branch, and its existing `Error: {{ report_error }}` output exposes the specific missing-dataset reason without a new event/status type.
+A disposable Git repository check confirmed:
 
-## Behavior intentionally unchanged
-
-The release does not change snapshot naming, retention selection, managed-name matching, count-floor behavior, age cutoff behavior, `zfs destroy` selection, Docker digest semantics, root enforcement, TOML schema, mail transport command, MQTT payload fields, MQTT QoS/retain/TLS behavior, broker credential transport, dry-run mutation suppression, or the single public `-c CONFIG` interface.
-
-A missing dataset is the only new per-dataset continuable ZFS failure. Other ZFS failures keep the previous immediate-abort behavior.
+- `config.toml` — ignored
+- `config-example.toml` — trackable
+- `config.example.md` — trackable
+- `datasets.example.txt` — trackable
+- `datasets` — ignored
 
 ## Manifest comparison
 
-The originally supplied archive and the 0.0.6 project both contain these 15 project paths:
+The supplied 0.0.7 archive and the 0.0.8 project both contain these 15 project paths:
 
 - `.gitignore`
 - `README.md`
@@ -78,7 +108,7 @@ The originally supplied archive and the 0.0.6 project both contain these 15 proj
 - `tests/test_app.py`
 - `tests/test_mqtt.py`
 
-Changed from the 0.0.5 baseline:
+Changed from the supplied 0.0.7 baseline:
 
 - `README.md`
 - `SnapBeforeWatchTower.py`
@@ -87,20 +117,20 @@ Changed from the 0.0.5 baseline:
 - `commented_code_map.md`
 - `config-example.toml`
 - `config.example.md`
+- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml`
+- `mqtt_report.py`
 - `tests/test_app.py`
 - `tests/test_mqtt.py`
 
-Unchanged from 0.0.5:
+Unchanged from the supplied 0.0.7 baseline:
 
 - `.gitignore`
 - `SAFETY.md`
 - `datasets.example.txt`
-- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml`
-- `mqtt_report.py`
 - `requirements-mqtt.txt`
 
 ## What was not live-tested
 
-No real ZFS dataset was intentionally made missing on a live ZFS host, and no real snapshot was created or destroyed. No live Docker daemon digest capture, local `mail` delivery, MQTT broker connection, or Home Assistant/Pushover execution was performed.
+No real ZFS snapshot was created or destroyed. No live Docker daemon digest capture, local `mail` delivery, MQTT broker connection, TLS/authentication exchange, Home Assistant automation execution, or Pushover delivery was performed.
 
-The new behavior is covered with mocked subprocess errors using the same exception objects and stderr strings the application consumes, including the supplied `dataset does not exist` form. Real-host ZFS wording, permissions, local mail configuration, broker connectivity/credentials/TLS, and Home Assistant execution should still be validated on the target system.
+The regression suite mocks external operations and verifies the application safety boundaries, notification selection, payload construction, and command ordering offline. Real-host ZFS permissions/error wording, local mail configuration, broker connectivity/credentials/TLS, and Home Assistant/Pushover execution should still be validated on the target system before production use.

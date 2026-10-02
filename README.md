@@ -11,7 +11,7 @@ The application does **not** start Watchtower, update containers, restore data, 
 - Root privileges for normal operation, including dry-run.
 - Docker CLI/daemon for image-digest capture during a real `create` run. Docker is not invoked for `delete` or dry-run.
 - Optional mail notifications require a local `mail` program that supports `-s` and `--attach`.
-- Optional MQTT reporting requires `paho-mqtt` from `requirements-mqtt.txt`.
+- Optional MQTT reporting requires `paho-mqtt` from `requirements-mqtt.txt` whenever `[mqtt].enabled = true`, including dry-run because failure reports may still need to publish.
 
 ## Setup
 
@@ -28,15 +28,31 @@ nano datasets
 
 The supplied configuration example starts with `dry_run = true`, mail disabled, and MQTT disabled. The supplied `datasets.example.txt` is a harmless format example and should be copied/edited into the `dataset_file` named by your TOML. These defaults are intentional so a copied example does not immediately destroy snapshots or send notifications.
 
-## Run command
+## Command-line interface
 
-The application has one public command-line option:
+Normal operation uses one TOML configuration file:
 
 ```bash
 sudo python3 SnapBeforeWatchTower.py -c config.toml
 ```
 
-`-c CONFIG` is required and points to the TOML configuration file. There are no separate command, dataset, retention, mail, MQTT, dry-run, help, or version flags; those operational settings are in TOML.
+The public command-line flags are:
+
+| Flag | Meaning |
+| --- | --- |
+| `-c CONFIG` | Required for normal operation. Load the TOML configuration file from `CONFIG`. |
+| `-h`, `--help` | Show the complete command-line help and exit without loading configuration or running ZFS/Docker/mail/MQTT operations. |
+| `--version` | Show the SnapBeforeWatchTower application version and exit without loading configuration or running operations. |
+
+Examples:
+
+```bash
+python3 SnapBeforeWatchTower.py --help
+python3 SnapBeforeWatchTower.py --version
+sudo python3 SnapBeforeWatchTower.py -c config.toml
+```
+
+There are no separate command, dataset, retention, mail, MQTT, or dry-run CLI flags. Those operational settings remain in TOML so one file describes the whole scheduled job.
 
 Relative paths in the TOML file are resolved relative to the TOML file itself. This makes cron/systemd execution independent of the shell's working directory.
 
@@ -44,7 +60,7 @@ Relative paths in the TOML file are resolved relative to the TOML file itself. T
 
 The complete commented configuration is in `config-example.toml`. Every supported setting is shown there.
 
-`config.example.md` is a supplemental human-readable reference for the same current TOML settings and the single `-c CONFIG` option; it is not loaded by the application.
+`config.example.md` is a supplemental human-readable reference for the same current TOML settings and public `-c CONFIG`, `-h`/`--help`, and `--version` flags; it is not loaded by the application.
 
 ### `[application]`
 
@@ -65,7 +81,7 @@ dry_run = true
 
 `retain_count` protects at least that many newest matching snapshots per dataset and newest log timestamp groups. Zero or a negative value disables the count floor; the age cutoff still applies.
 
-`dry_run = true` previews ZFS snapshot creation/destruction and old-log deletion. Dry-run still lists existing ZFS snapshots, creates run logs, and can send configured email. Docker digest collection is skipped. MQTT settings are validated when MQTT is enabled, but the final MQTT publish is suppressed so a preview cannot advance an automation.
+`dry_run = true` previews ZFS snapshot creation/destruction and old-log deletion. Dry-run still lists existing ZFS snapshots and creates run logs; Docker digest collection is skipped. Mail and MQTT reporting follow the same success/failure policy as a real run: when a channel is enabled, failures are reported regardless of its `on_success` value, while successful dry-runs are reported only when that channel has `on_success = true`.
 
 ### `[mail]` — optional
 
@@ -78,7 +94,7 @@ on_success = false
 
 When `enabled = false`, mail is disabled regardless of the other mail values.
 
-When `enabled = true`, `recipient` must be non-empty. Failure mail is enabled. `on_success = true` additionally sends a success report; it does not disable failure mail. A run that encountered one or more missing ZFS datasets still sends failure mail after the remaining datasets have been processed; its subject and introductory text identify the missing-dataset reason. The report uses the newest `.log` and newest non-empty `.err` files and attaches them where available. Mail delivery failure is logged but does not reliably replace the snapshot job exit result.
+When `enabled = true`, `recipient` must be non-empty. Failure mail is always enabled, including during dry-run. `on_success = true` additionally sends a success report for both real and dry-run executions; `on_success = false` suppresses only success mail and never suppresses failure mail. Dry-run mail subjects are explicitly marked `DRY-RUN`. A run that encountered one or more missing ZFS datasets still sends failure mail after the remaining datasets have been processed; its subject and introductory text identify the missing-dataset reason. The report uses the newest `.log` and newest non-empty `.err` files and attaches them where available. Mail delivery failure is logged but does not reliably replace the snapshot job exit result.
 
 ### `[mqtt]` — optional
 
@@ -93,6 +109,7 @@ Configuration example:
 ```toml
 [mqtt]
 enabled = false
+on_success = false
 host = "mqtt.example.local"
 port = 1883
 topic = "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status"
@@ -109,15 +126,29 @@ timeout = 15
 
 When `enabled = false`, MQTT reporting is disabled and `paho-mqtt` is not required. Unsupported MQTT keys are still rejected.
 
+When `enabled = true`, MQTT failure reports are always attempted, including during dry-run. `on_success = true` additionally publishes success reports for both real and dry-run executions; `on_success = false` suppresses only successful MQTT reports. Because a dry-run can still fail and must then report that failure, `paho-mqtt` is required whenever MQTT is enabled.
+
 When `enabled = true`, `host` and `topic` are required non-empty strings. `topic` cannot contain `+` or `#`. `port` must be 1–65535, `qos` must be 0, 1, or 2, and `timeout` must be 1–120 seconds. Reports are always published with `retain = false`.
 
 `username` and `password` are plain TOML strings. An empty string disables that optional value. A non-empty password requires a non-empty username. Because the password is stored directly in the TOML file, protect the operational config with restrictive filesystem permissions and do not commit or share it.
 
 `tls = true` enables certificate and hostname verification. `ca_file` is optional; an empty string uses system trust. `cert_file` and `key_file` must either both be empty or both point to files. Relative certificate/key paths are resolved relative to the TOML file.
 
-The final MQTT payload contains `status`, `title`, `name`, `job`, `exit_code`, `warning`, `error`, `stderr`, `command`, `version`, `run_id`, and `finished_at`. Exit code 0 reports `status: success`; nonzero outcomes report `status: failure`. Missing datasets do not introduce a new status value: after the script continues through the remaining datasets, the final report is still `status: failure` with `exit_code: 1`, and `error` explicitly identifies the missing dataset name(s) and the `dataset does not exist` reason. This keeps the supplied Home Assistant success/failure branching unchanged. Nonfatal messages captured by the error logger can produce `warning: true` while the overall status remains success. Error fields are bounded to 4096 characters.
+The final MQTT payload contains `status`, `title`, `name`, `job`, `exit_code`, `warning`, `error`, `stderr`, `command`, `version`, `run_id`, `finished_at`, and `dry_run`. `dry_run` is `true` for preview runs and `false` for real runs. Exit code 0 reports `status: success`; nonzero outcomes report `status: failure`. Missing datasets do not introduce a new status value: after the script continues through the remaining datasets, the final report is still `status: failure` with `exit_code: 1`, and `error` explicitly identifies the missing dataset name(s) and the `dataset does not exist` reason. This keeps the supplied Home Assistant success/failure branching unchanged. Nonfatal messages captured by the error logger can produce `warning: true` while the overall status remains success. Error fields are bounded to 4096 characters.
 
 MQTT runs in a separate child process so its total operation can be timed out. Broker credentials are passed to that child over stdin rather than on its process command line. MQTT publish failures are sanitized in application logs and do not replace the underlying snapshot operation result.
+
+### Notification policy
+
+Mail and MQTT use the same result-selection rules independently:
+
+| Channel state | Successful real run | Successful dry-run | Failed real run | Failed dry-run |
+| --- | --- | --- | --- | --- |
+| `enabled = false` | No report | No report | No report | No report |
+| `enabled = true`, `on_success = false` | No success report | No success report | Failure report | Failure report |
+| `enabled = true`, `on_success = true` | Success report | Success report | Failure report | Failure report |
+
+`[mail].on_success` controls only mail success reports. `[mqtt].on_success` controls only MQTT success reports. One channel can therefore report success while the other remains failure-only.
 
 ## Dataset file
 
@@ -184,8 +215,33 @@ The application does not use shell interpolation for these commands; arguments a
 
 ## Home Assistant MQTT automation
 
-`homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` contains a compatible Home Assistant automation. Its MQTT trigger topic must exactly match `[mqtt].topic` in your TOML configuration. No automation branch change is required for missing datasets: the report still uses `status: failure`, and the automation already includes the payload `error` field in its failure notification, so the missing-dataset reason and dataset name(s) appear in the existing failure path.
+`homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` contains a compatible Home Assistant automation. Its MQTT trigger topic must exactly match `[mqtt].topic` in your TOML configuration. The automation reads the payload `dry_run` flag and displays `DRY-RUN` or `LIVE` in success and failure notifications. Missing datasets still use `status: failure`, and the automation includes the payload `error` field so the missing-dataset reason and dataset name(s) remain in the failure path.
 
 ## Safety
 
 This program performs destructive ZFS snapshot deletion and log deletion. Review `SAFETY.md`, start with `dry_run = true`, verify the resulting plan/logs, and keep independent backups before using real deletion.
+
+## ⚠️ Disclaimer / Liability
+
+**Use this script at your own risk.**
+
+The author takes **no responsibility or liability** for any data loss, service disruption, misconfiguration, service outage, missed backups, credential exposure, or other damage that may occur from using this script.
+
+Before running it in production, you **must**:
+
+- Read the entire source code
+- Understand exactly what it does (and what it does *not* do)
+- Review and adapt it to your own environment
+- Test it carefully in a non‑production setup
+
+By using this script, **you accept full responsibility** for its effects.
+
+⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
+
+## Disclaimer
+
+This project is AI-assisted / vibe-coded software created as a hobby project. It has not been professionally audited and may contain bugs, unsafe behavior, data-loss issues, security problems, or incorrect assumptions.
+
+You are responsible for reviewing the code, testing it in a safe environment, making backups, and understanding what it does before using it on real data. The author is not responsible for damage, data loss, broken systems, security issues, or other problems caused by using this software.
+
+---

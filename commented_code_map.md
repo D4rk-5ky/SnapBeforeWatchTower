@@ -6,8 +6,8 @@ This map describes the current application, why each function/class exists, and 
 
 ### Module-level behavior
 
-- `__version__` — current application release number embedded in MQTT reports and maintained in `VERSIONING.md`. There is no public version CLI flag in the TOML-only interface.
-- TOML is parsed with Python's standard-library `tomllib`. The only public CLI option is `-c CONFIG`; all operational values come from that file.
+- `__version__` — current application release number embedded in MQTT reports, exposed by the public `--version` flag, and maintained in `VERSIONING.md`.
+- TOML is parsed with Python's standard-library `tomllib`. Normal operation uses `-c CONFIG`; `-h`/`--help` and `--version` are informational flags. All operational values still come from the TOML file.
 
 ### Classes and functions
 
@@ -60,27 +60,27 @@ This map describes the current application, why each function/class exists, and 
 
 - `load_app_config(path)` — loads the single TOML file and converts its settings into the existing runtime shape used by `run()`. It validates supported sections/keys/types, reuses `parse_older_than()`, resolves `dataset_file` relative to the TOML, turns disabled mail into `send_mail=None`, and delegates `[mqtt]` validation to `mqtt_report.validate_config()`. Reusing the existing runtime attributes lets the ZFS/mail operation code stay unchanged.
 
-- `main()` — exposes the only public CLI option, `-c CONFIG`. It rejects every other flag, loads TOML before operations, creates the optional MQTT `RunReporter`, and enters the unchanged operation flow.
+- `main()` — builds the public CLI. `-c CONFIG` remains required for normal operation, standard `-h`/`--help` prints all public flags, and `--version` prints `__version__`; both informational flags exit before TOML loading or operations. Retired operational CLI flags remain rejected. After normal parsing it loads TOML, creates the optional MQTT `RunReporter`, and enters the unchanged operation flow.
 
-- `run(args, reporter)` — active operation coordinator. It chooses logging, attaches the MQTT error observer, enforces root before dataset/Docker/ZFS operations, reads datasets, and executes create/delete behavior in file order. A ZFS missing-dataset error from snapshot creation or snapshot listing is recorded per dataset and processing continues; after later datasets and normal log cleanup finish, `MissingDatasetsError` makes the overall run fail, selects missing-dataset failure mail, and gives MQTT a specific failure reason. Any other operation error still propagates immediately. Optional success mail and empty-current-`.err` cleanup remain unchanged.
+- `run(args, reporter)` — active operation coordinator. It chooses logging, attaches the MQTT error observer, enforces root before dataset/Docker/ZFS operations, reads datasets, and executes create/delete behavior in file order. A ZFS missing-dataset error from snapshot creation or snapshot listing is recorded per dataset and processing continues; after later datasets and normal log cleanup finish, `MissingDatasetsError` makes the overall run fail, selects missing-dataset failure mail, and gives MQTT a specific failure reason. Any other operation error still propagates immediately. Mail failure reports are sent whenever mail is enabled; mail success reports require `[mail].on_success=true`. The same mail policy applies in dry-run, whose mail subjects/intro are explicitly marked as dry-run. Empty-current-`.err` cleanup remains unchanged.
 
 ## `mqtt_report.py`
 
 ### Constants
 
-- `DEFAULTS` — default MQTT port/title/auth/QoS/TLS/certificate/timeout settings used only when MQTT is enabled.
+- `DEFAULTS` — default MQTT port/title/auth/QoS/TLS/certificate/timeout settings plus `on_success=false`, used only when MQTT is enabled.
 - `SUPPORTED_KEYS` — exact accepted TOML `[mqtt]` keys after the top-level `enabled` switch has been removed by `load_app_config()`.
 - `OPTIONAL_STRING_KEYS` — optional string fields that may be represented by `""` in TOML because TOML has no `null` value. Empty strings are normalized to `None` before publishing.
 
 ### Classes and functions
 
-- `validate_config(supplied, base_dir, dry_run=False, enabled=True)` — validates TOML-sourced MQTT settings. Unsupported keys are rejected even when disabled. When disabled, no broker details or Paho dependency are required. When enabled, it validates broker/topic/QoS/timeout/TLS/auth, resolves TLS files relative to the TOML directory, normalizes empty optional strings, and checks for `paho-mqtt` unless the whole application is in dry-run.
+- `validate_config(supplied, base_dir, dry_run=False, enabled=True)` — validates TOML-sourced MQTT settings. Unsupported keys are rejected even when disabled. When disabled, no broker details or Paho dependency are required. When enabled, it validates broker/topic/QoS/timeout/TLS/auth/`on_success`, resolves TLS files relative to the TOML directory, normalizes empty optional strings, and requires `paho-mqtt` even in dry-run because failure reporting remains active there.
 
 - `ErrorCapture(logging.Handler)` — bounded in-memory collector for current-run error messages used in MQTT payloads. It avoids rereading older `.err` files and caps captured text at 4096 characters.
   - `ErrorCapture.__init__()` — configures ERROR-level capture and starts with empty text.
   - `ErrorCapture.emit(record)` — ignores separator-only messages and retains only the newest bounded error text.
 
-- `build_payload(config, command, version, exc, errors, run_id)` — translates the actual process outcome into the Home Assistant JSON contract. It distinguishes success/failure exit codes, preserves nonfatal logged errors as `warning=true`, adds bounded failure/stderr text, and includes command/version/run/time metadata.
+- `build_payload(config, command, version, exc, errors, run_id, dry_run=False)` — translates the actual process outcome into the Home Assistant JSON contract. It distinguishes success/failure exit codes, preserves nonfatal logged errors as `warning=true`, adds bounded failure/stderr text, includes command/version/run/time metadata, and exposes `dry_run=true|false` for consumers.
 
 - `publish_report(config, payload)` — starts the same Python module as a bounded child worker and passes broker settings/payload over stdin as JSON. Credentials therefore do not appear in the child command line. Worker output is not copied into application errors because it could contain broker/credential details.
 
@@ -88,7 +88,7 @@ This map describes the current application, why each function/class exists, and 
   - `RunReporter.__init__(config, command, version, dry_run=False)` — records settings, creates a unique run ID, and prepares an `ErrorCapture` handler.
   - `RunReporter.__enter__()` — returns the reporter for attachment to the application's error logger.
   - `RunReporter.attach(error_logger)` — attaches current-run error capture after logging is initialized.
-  - `RunReporter.__exit__(exc_type, exc, traceback)` — detaches capture, suppresses publishing when disabled/dry-run, builds/publishes the final payload otherwise, logs sanitized MQTT failure/timeout messages, and always returns `False` so original exceptions continue propagating.
+  - `RunReporter.__exit__(exc_type, exc, traceback)` — detaches capture, does nothing when MQTT is disabled, otherwise builds the final payload for both real and dry-run executions, suppresses only successful reports when `[mqtt].on_success=false`, always attempts failure reports, logs sanitized MQTT failure/timeout messages, and always returns `False` so original exceptions continue propagating.
 
 - `worker()` — child-process Paho publisher. It reads its request from stdin, constructs optional username/password auth and verified TLS context, then publishes exactly one non-retained message.
 
@@ -127,10 +127,14 @@ This map describes the current application, why each function/class exists, and 
   - `test_docker_nonzero_is_logged_and_returns_none()` — verifies Docker digest failure stays nonfatal and leaves no digest artifact.
   - `test_nonroot_refuses_before_dataset_or_external_commands()` — verifies root enforcement occurs before dataset/ZFS/Docker operations.
   - `test_main_create_order_and_docker_failure_continuation()` — verifies create-mode ordering remains digest, create/retain per dataset, then log cleanup.
+  - `test_dry_run_success_mail_respects_on_success()` — verifies successful dry-runs send mail only when `[mail].on_success=true` and mark the report as dry-run.
+  - `test_dry_run_failure_mail_is_sent_even_when_on_success_is_false()` — verifies a failed dry-run still sends failure mail when mail is enabled even with success mail disabled.
   - `test_mail_options_precede_recipient()` — verifies safe/compatible local `mail` argument order.
 - `CLITests` — parser-boundary regression suite.
   - `run_cli(*args)` — invokes the real script parser in a subprocess without bytecode generation.
-  - `test_only_config_flag_is_accepted()` — verifies `-c CONFIG` is the only public CLI option and old/help/version/long-config flags are rejected.
+  - `test_help_describes_all_public_flags()` — verifies both help aliases exit successfully and document `-c CONFIG`, `-h`/`--help`, `--version`, and the TOML-only operational-settings rule.
+  - `test_version_exits_without_config()` — verifies `--version` exits successfully and reports the exact current release without requiring `-c`.
+  - `test_config_is_required_and_retired_operational_flags_are_rejected()` — verifies normal execution still requires `-c CONFIG` and retired operational/long-form config flags remain rejected.
 
 ## `tests/test_mqtt.py`
 
@@ -146,16 +150,17 @@ This map describes the current application, why each function/class exists, and 
   - `test_capture_is_bounded_and_ignores_separators()` — verifies MQTT error text is bounded and cosmetic separators are ignored.
   - `test_worker_publish_uses_auth_tls_and_no_retain()` — verifies Paho receives direct auth, TLS context, payload, and `retain=false`.
   - `test_publisher_timeout_stdin_and_failure()` — verifies timeout usage, stdin transport, and secret-safe worker failure handling.
-  - `test_disabled_and_dry_run_never_publish()` — verifies disabled/dry-run reporting cannot publish.
+  - `test_success_reporting_respects_on_success_in_real_and_dry_run()` — verifies MQTT success reports are suppressed when `on_success=false` and published when `on_success=true`, identically for real and dry-run executions.
+  - `test_failure_reporting_ignores_on_success_in_real_and_dry_run()` — verifies MQTT failures publish even when `on_success=false`, identically for real and dry-run executions.
   - `test_reporter_publishes_once_and_does_not_mask_failure()` — verifies one failure report while the original exception still propagates.
   - `test_publish_errors_preserve_original_outcome()` — verifies MQTT delivery failure is sanitized and never changes the underlying operation outcome.
 
 ## Configuration and integration files
 
 - `config-example.toml` — loadable, fully commented example containing every supported `[application]`, `[mail]`, and `[mqtt]` setting. It defaults to dry-run with mail and MQTT disabled for a safer first copy.
-- `config.example.md` — supplemental human-readable reference for the same current TOML-only interface. It documents the single public `-c CONFIG` option and every supported TOML setting, but is never parsed by the application.
+- `config.example.md` — supplemental human-readable reference for the current TOML-driven interface. It documents `-c CONFIG`, `-h`/`--help`, `--version`, and every supported TOML setting, but is never parsed by the application.
 - `datasets.example.txt` — minimal two-line example of the dataset-list format consumed by `dataset_file`.
-- `requirements-mqtt.txt` — optional Paho MQTT dependency list required only for real MQTT publishing.
-- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` — example Home Assistant MQTT status automation for SnapBeforeWatchTower. It listens for the JSON report, sends Pushover success/failure/unknown notifications, and uses SnapBeforeWatchTower naming throughout.
-- `SAFETY.md` — preserved disclaimer/liability/data-loss notices for this project.
-- `.gitignore` — excludes private operational `config*` files, runtime dataset/list files, logs, Python caches, and build artifacts while explicitly keeping the shipped `config-example.toml`, `config.example.md`, and `datasets.example.txt` examples trackable.
+- `requirements-mqtt.txt` — optional Paho MQTT dependency list required whenever `[mqtt].enabled=true`, including dry-run because failures still publish.
+- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` — example Home Assistant MQTT status automation for SnapBeforeWatchTower. It listens for the JSON report, sends Pushover success/failure/unknown notifications, and displays the payload `dry_run` mode as `DRY-RUN` or `LIVE`.
+- `SAFETY.md` — contains the project disclaimer/liability text requested for SnapBeforeWatchTower plus a project-specific destructive ZFS/log-retention warning and the existing no-license notice.
+- `.gitignore` — excludes private operational `config*` files, runtime dataset/list files, logs, Python caches, and build artifacts while explicitly unignoring the shipped `config-example.toml`, `config.example.md`, and `datasets.example.txt` examples so they remain trackable.

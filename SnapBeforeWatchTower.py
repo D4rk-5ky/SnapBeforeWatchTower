@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 from mqtt_report import RunReporter, validate_config as validate_mqtt_config
 
-__version__ = "0.0.6"
+__version__ = "0.0.8"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -687,11 +687,15 @@ def load_app_config(path):
 
 def main():
     parser = argparse.ArgumentParser(
-        add_help=False,
         usage='%(prog)s -c CONFIG',
         description='Run SnapBeforeWatchTower using one TOML configuration file.',
+        epilog=(
+            'Operational settings such as create/delete mode, datasets, retention, mail, MQTT, '
+            'and dry-run are configured in the TOML file rather than with separate CLI flags.'
+        ),
     )
-    parser.add_argument('-c', metavar='CONFIG', required=True, help='Path to the TOML configuration file')
+    parser.add_argument('-c', metavar='CONFIG', required=True, help='Path to the TOML configuration file used for all operational settings')
+    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}', help='Show the application version and exit')
     cli = parser.parse_args()
     try:
         args, mqtt_config = load_app_config(cli.c)
@@ -706,6 +710,7 @@ def run(args, reporter):
     global err_filepath
     
     dry_run = args.dry_run
+    report_prefix = "SnapBeforeWatchTower DRY-RUN" if dry_run else "SnapBeforeWatchTower"
 
     log_date = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
     # Pick log folder: root-only folder if root, otherwise /tmp fallback
@@ -723,8 +728,8 @@ def run(args, reporter):
     # If not root: log once, optionally mail, and exit BEFORE running zfs/docker/etc.
     if os.geteuid() != 0:
         msg = (
-            "This script must be run as root (sudo). "
-            f"Logs were written to: {log_folder} (fallback, because not root)."
+            ("SnapBeforeWatchTower dry-run must be run as root (sudo). " if dry_run else "This script must be run as root (sudo). ")
+            + f"Logs were written to: {log_folder} (fallback, because not root)."
         )
         error_logger.error(msg)
 
@@ -735,7 +740,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
-                    subject="SnapBeforeWatchTower FAILED - not run as root",
+                    subject=f"{report_prefix} FAILED - not run as root",
                     intro=msg,
                 )
             except Exception as mail_e:
@@ -822,10 +827,11 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
-                    subject="SnapBeforeWatchTower FAILED - missing dataset",
+                    subject=f"{report_prefix} FAILED - missing dataset",
                     intro=(
-                        "SnapBeforeWatchTower processed the remaining configured datasets, but the run "
-                        f"failed because one or more ZFS datasets do not exist. {e}"
+                        ("SnapBeforeWatchTower dry-run processed the remaining configured datasets, but the run " if dry_run
+                         else "SnapBeforeWatchTower processed the remaining configured datasets, but the run ")
+                        + f"failed because one or more ZFS datasets do not exist. {e}"
                     ),
                 )
             except Exception as mail_e:
@@ -844,8 +850,8 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
-                    subject="SnapBeforeWatchTower FAILED - logs attached",
-                    intro="SnapBeforeWatchTower failed. See attached logs.",
+                    subject=f"{report_prefix} FAILED - logs attached",
+                    intro=("SnapBeforeWatchTower dry-run failed. See attached logs." if dry_run else "SnapBeforeWatchTower failed. See attached logs."),
                 )
             except Exception as mail_e:
                 error_logger.error(f"Additionally failed to send mail: {mail_e}")
@@ -860,8 +866,8 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
-                    subject="SnapBeforeWatchTower SUCCESS - logs attached",
-                    intro="SnapBeforeWatchTower completed successfully. Logs attached.",
+                    subject=f"{report_prefix} SUCCESS - logs attached",
+                    intro=("SnapBeforeWatchTower dry-run completed successfully. Logs attached." if dry_run else "SnapBeforeWatchTower completed successfully. Logs attached."),
                 )
             except Exception as mail_e:
                 error_logger.error(f"Failed to send success mail: {mail_e}")

@@ -19,7 +19,7 @@ This map describes the current application, why each function/class exists, and 
 
 - `choose_log_folder(preferred_root_folder, fallback_folder=None)` — retained original root/non-root log-folder helper. The current run path uses `pick_log_folder()`; this function remains for compatibility with the original source.
 
-- `runtime_base_dir()` — returns the persistent application directory. Source mode uses the directory containing `SnapBeforeWatchTower.py`; a PyInstaller one-file build uses the directory containing `sys.executable` so logs are not written into PyInstaller's temporary extraction tree.
+- `runtime_base_dir()` — returns the persistent application directory. Source mode uses the directory containing `SnapBeforeWatchTower.py`. A frozen executable inside a project `dist/` uses the project directory so runtime logs do not create `dist/logs/`; a frozen executable deployed elsewhere uses the directory containing `sys.executable`.
 
 - `pick_log_folder(script_log_folder, tmp_name="SnapBeforeWatchTower")` — implements the active log-location policy. Non-root always uses a temporary directory. Root first tests whether the source/frozen application-local log directory is writable, then falls back to temporary storage if necessary.
   - nested `_ensure_writable(path)` — safely probes a directory by creating/removing a small `.write_test` file; failure returns `False` instead of aborting the run.
@@ -143,7 +143,8 @@ This map describes the current application, why each function/class exists, and 
   - `test_log_groups_count_age_and_dry_run()` — verifies log-group retention and dry-run behavior.
   - `test_docker_nonzero_is_logged_and_returns_none()` — verifies Docker digest failure stays nonfatal and leaves no digest artifact.
   - `test_nonroot_refuses_before_dataset_or_external_commands()` — verifies root enforcement occurs before dataset/ZFS/Docker operations.
-  - `test_runtime_base_dir_uses_executable_directory_when_frozen()` — proves source mode uses the project directory while frozen mode places persistent root-run logs beside the executable.
+  - `test_runtime_base_dir_keeps_project_dist_clean_when_frozen()` — proves a frozen executable under `dist/` uses the project directory as its persistent base so runtime logs cannot pollute `dist/`.
+  - `test_runtime_base_dir_uses_executable_directory_when_frozen_outside_dist()` — proves a frozen executable deployed outside a directory named `dist` still uses its executable directory as the persistent base.
   - `test_frozen_private_mqtt_worker_entrypoint_bypasses_public_cli()` — proves the private worker switch invokes only the MQTT worker when running frozen and does not require `-c CONFIG`.
   - `test_main_create_order_and_docker_failure_continuation()` — verifies create-mode ordering remains digest, create/retain per dataset, then log cleanup.
   - `test_dry_run_continued_dataset_command_failure_still_reports_failure()` — verifies a continued per-dataset list failure in dry-run still ends as failure and sends explicitly DRY-RUN failure mail even with success mail disabled.
@@ -187,8 +188,8 @@ This map describes the current application, why each function/class exists, and 
 - `requirements-mqtt.txt` — optional Paho MQTT dependency list required whenever `[mqtt].enabled=true`, including dry-run because failures still publish.
 - `requirements-build.txt` — pinned build-only dependency list containing PyInstaller and Paho MQTT.
 - `SnapBeforeWatchTower.spec` — one-file PyInstaller recipe; `collect_submodules('paho')` ensures all MQTT modules are bundled even though the application validates/imports Paho dynamically.
-- `build-pyinstaller.sh` — reproducible build entry point. It creates `.venv-build`, installs build requirements, removes stale `build/`/`dist/`, builds the one-file executable, and checks `--help`/`--version`.
-- `dist/README.md` — documents the required output location `dist/SnapBeforeWatchTower` in a source tree before a local build is run.
+- `build-pyinstaller.sh` — reproducible build entry point. It recreates one gitignored `.build-pyinstaller/` workspace containing `venv/`, `pip-cache/`, PyInstaller `work/`, and PyInstaller `config/`; removes legacy root-level `build/` and `.venv-build/` locations; cleans every generated/stale `dist/` entry except the tracked `dist/README.md`; builds the one-file executable with explicit `--workpath`/`--distpath`; checks `--help`/`--version`; and fails unless `dist/` contains exactly `SnapBeforeWatchTower` and `README.md`.
+- `dist/README.md` — tracked build-output note kept beside the generated executable. The build script preserves it while removing every other stale/generated `dist/` entry.
 - `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` — example Home Assistant MQTT status automation for SnapBeforeWatchTower. It listens for the JSON report, sends Pushover success/failure/unknown notifications, and displays the payload `dry_run` mode as `DRY-RUN` or `LIVE`.
 - `SAFETY.md` — contains the project disclaimer/liability text requested for SnapBeforeWatchTower plus a project-specific destructive ZFS/log-retention warning and the existing no-license notice.
-- `.gitignore` — excludes private operational `config*` files, runtime dataset/list files, logs, Python caches, and build artifacts while explicitly unignoring the shipped `config-example.toml`, `config.example.md`, and `datasets.example.txt` examples so they remain trackable.
+- `.gitignore` — excludes private operational `config*` files, runtime dataset/list files, logs, Python caches, legacy build locations, and the complete generated `.build-pyinstaller/` workspace while explicitly unignoring the shipped `config-example.toml`, `config.example.md`, `datasets.example.txt`, and `dist/README.md` files so they remain trackable.

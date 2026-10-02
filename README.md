@@ -36,13 +36,13 @@ A reproducible PyInstaller build is included. Build dependencies are isolated fr
 ./build-pyinstaller.sh
 ```
 
-The script creates a private `.venv-build`, installs the pinned packages from `requirements-build.txt`, removes previous `build/` and `dist/` outputs, then builds and verifies the executable with `--help` and `--version`. The final executable path is:
+The script creates one private, gitignored `.build-pyinstaller/` workspace, with the build virtual environment, pip cache, PyInstaller work files, and PyInstaller config/cache kept underneath it. It also removes the legacy project-level `build/` and `.venv-build/` locations from older releases. Before building, it cleans every generated/stale entry from `dist/` while keeping the tracked `dist/README.md`. After the build it verifies the executable with `--help` and `--version` and fails unless `dist/` contains exactly the executable and README. The final executable path is:
 
 ```text
 dist/SnapBeforeWatchTower
 ```
 
-`SnapBeforeWatchTower.spec` explicitly collects all `paho` submodules so MQTT support is present even though Paho is imported dynamically. The executable also contains the Python interpreter and standard-library modules used by the application. It still relies on normal host tools such as `zfs`, `docker`, and `mail` because those are external system commands, not Python modules.
+`SnapBeforeWatchTower.spec` explicitly collects all `paho` submodules so MQTT support is present even though Paho is imported dynamically. The executable also contains the Python interpreter and standard-library modules used by the application. It still relies on normal host tools such as `zfs`, `docker`, and `mail` because those are external system commands, not Python modules. All generated build state is isolated under the gitignored `.build-pyinstaller/` directory; it is not part of the release output. The generated `dist/` directory is intentionally restricted to **exactly two files**: `dist/SnapBeforeWatchTower` and the tracked `dist/README.md`. No dependency directory, log directory, cache, work directory, hidden file, or other artifact is allowed there.
 
 Run the standalone build exactly like the source version:
 
@@ -52,7 +52,7 @@ Run the standalone build exactly like the source version:
 sudo ./dist/SnapBeforeWatchTower -c config.toml
 ```
 
-PyInstaller output is platform/architecture specific. Build on the Linux architecture on which you intend to run the executable. In frozen mode the MQTT timeout worker safely re-executes the same `dist/SnapBeforeWatchTower` binary using a private internal switch while keeping broker configuration and credentials on stdin rather than command-line arguments. Persistent root-run logs are written to `dist/logs/`; non-root execution retains the existing `/tmp/SnapBeforeWatchTower` fallback.
+PyInstaller output is platform/architecture specific. Build on the Linux architecture on which you intend to run the executable. In frozen mode the MQTT timeout worker safely re-executes the same `dist/SnapBeforeWatchTower` binary using a private internal switch while keeping broker configuration and credentials on stdin rather than command-line arguments. When the executable is run from a project `dist/` directory, persistent root-run logs are written to the project-level `logs/` directory so `dist/` stays clean; if the executable is deployed somewhere else, logs use a `logs/` directory beside that deployed executable. Non-root execution retains the existing `/tmp/SnapBeforeWatchTower` fallback.
 
 ## Command-line interface
 

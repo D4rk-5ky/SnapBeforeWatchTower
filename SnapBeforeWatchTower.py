@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 from mqtt_report import RunReporter, validate_config as validate_mqtt_config, worker as mqtt_worker
 
-__version__ = "0.0.11"
+__version__ = "0.0.14"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -114,9 +114,18 @@ def choose_log_folder(preferred_root_folder: str, fallback_folder: str | None = 
     return fallback_folder
 
 def runtime_base_dir() -> str:
-    """Return the persistent application directory for source and frozen execution."""
+    """Return the persistent application directory for source and frozen execution.
+
+    A frozen executable built into a conventional project ``dist/`` directory uses
+    the project directory as its persistent base so runtime logs do not pollute
+    ``dist/``. A frozen executable deployed elsewhere keeps using its executable
+    directory, while source execution keeps using the source directory.
+    """
     if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
+        executable_dir = Path(sys.executable).resolve().parent
+        if executable_dir.name == "dist":
+            return str(executable_dir.parent)
+        return str(executable_dir)
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -817,8 +826,9 @@ def run(args, reporter):
     log_date = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
     # Pick log folder: root-only folder if root, otherwise /tmp fallback
     # In a PyInstaller one-file build, __file__ points into the temporary bundle
-    # extraction directory. runtime_base_dir() keeps persistent logs beside the
-    # executable while preserving the existing source-mode location.
+    # extraction directory. runtime_base_dir() keeps build output clean by using
+    # the project root when the frozen executable lives in dist/, while preserving
+    # the existing source-mode location and sensible deployed-binary behavior.
     preferred_log_folder = os.path.join(runtime_base_dir(), "logs")
     log_folder = pick_log_folder(preferred_log_folder)
 

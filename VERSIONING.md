@@ -1,8 +1,64 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.11. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.14. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.14 — 2026-10-02
+
+### Isolate all generated PyInstaller build state
+
+- Bump the application version from 0.0.13 to 0.0.14 so source/frozen `--version` and MQTT release metadata identify this packaging release.
+- Keep the final `dist/` contract unchanged: exactly `dist/README.md` and `dist/SnapBeforeWatchTower` are permitted after a successful build; every other normal or hidden entry remains a build error.
+- Replace the generated project-level `.venv-build/` and `build/` locations with one fixed `.build-pyinstaller/` workspace. Its `venv/`, `pip-cache/`, PyInstaller `work/`, and PyInstaller `config/` subdirectories contain all generated build state.
+- Pass explicit PyInstaller `--workpath` and `--distpath` values and `PYINSTALLER_CONFIG_DIR`, keeping PyInstaller intermediates/cache/config outside `dist/` and outside the project root.
+- Make the build script remove old `.build-pyinstaller/`, legacy `build/`, and legacy `.venv-build/` state before each build, then recreate the isolated workspace from scratch.
+- Add `.build-pyinstaller/` to `.gitignore`; retain the legacy `build/` and `.venv-build/` ignore rules so stale artifacts from older versions are never accidentally committed.
+- Preserve runtime logs outside project `dist/` and preserve all ZFS, retention, dry-run, continuation, Docker, mail, MQTT, Home Assistant, and safety behavior unchanged.
+
+### Tests, documentation, and packaging
+
+- Keep the 50-test offline application regression suite and update version fixtures to 0.0.14.
+- Re-run shell syntax, Python compile, public CLI help/version, TOML/config documentation, manifest, and controlled build-layout checks.
+- Update README.md, `config.example.md`, `commented_code_map.md`, `dist/README.md`, and `VERIFICATION.md` to document the isolated gitignored build workspace and strict two-file `dist/` output.
+- Keep the source release free of `.build-pyinstaller/`, legacy build output, bytecode, caches, backups, and temporary files.
+
+## 0.0.13 — 2026-10-02
+
+### Allow the tracked dist README beside the executable
+
+- Bump the application version from 0.0.12 to 0.0.13 so source/frozen `--version` and MQTT release metadata identify this packaging release.
+- Restore `dist/README.md` as the one permitted non-executable file in the final `dist/` directory. It documents the standalone executable path and bundled-vs-external requirements.
+- Change `build-pyinstaller.sh` so each build removes the previous PyInstaller `build/` directory and cleans every normal/hidden `dist/` entry except the tracked `README.md` before building.
+- Change the post-build assertion so `dist/` must contain **exactly two entries**: `SnapBeforeWatchTower` and `README.md`. Any other normal or hidden file/directory causes the build to fail.
+- Restore the `.gitignore` exception for `dist/README.md` while keeping all other `dist/*` output ignored.
+- Keep runtime logs outside project `dist/`, so normal execution does not add a third entry.
+- Preserve all ZFS, retention, dry-run, continuation, Docker, mail, MQTT, Home Assistant, and safety behavior unchanged.
+
+### Tests, documentation, and packaging
+
+- Keep the 50-test offline application suite and update version fixtures to 0.0.13.
+- Re-run shell syntax, Python compile, public CLI help/version, TOML/config documentation, and controlled build-layout checks.
+- Update README.md, `config.example.md`, `commented_code_map.md`, and `VERIFICATION.md` to describe the two-entry `dist/` contract.
+- Final source package restores the 0.0.11 `dist/README.md` path while preserving every 0.0.12 project file.
+
+## 0.0.12 — 2026-10-02
+
+### Clean single-artifact PyInstaller output
+
+- Bump the application version from 0.0.11 to 0.0.12 so source/frozen `--version` and MQTT release metadata identify this packaging release.
+- Change `build-pyinstaller.sh` so every build deletes both `build/` and `dist/`, recreates an empty `dist/`, builds the one-file executable, smoke-tests it, and then fails unless `dist/SnapBeforeWatchTower` is the **only** entry in `dist/`. Hidden files and directories are included in this check.
+- Remove the 0.0.11-generated `dist/README.md`; no documentation, dependencies, logs, helper files, or other artifacts are intentionally placed in `dist/`.
+- Remove the `.gitignore` exception for `dist/README.md`; all `dist/*` content is now generated build output.
+- Adjust `runtime_base_dir()` so a frozen executable launched from a directory literally named `dist` writes persistent root-run logs to the project-level `logs/` directory instead of creating `dist/logs/`. A frozen executable deployed elsewhere continues to use its executable directory as the persistent base; source behavior and the non-root `/tmp/SnapBeforeWatchTower` fallback are unchanged.
+- Preserve the one-file PyInstaller spec, bundled Paho MQTT worker design, TOML interface, ZFS safety/retention behavior, dry-run behavior, continuation policies, and mail/MQTT reporting rules.
+
+### Tests, documentation, and packaging
+
+- Add regression coverage for the new frozen `dist/` log-base rule and retain coverage for frozen execution outside `dist`; the offline suite is now 50 tests.
+- Update README.md, `config.example.md`, `commented_code_map.md`, and `VERIFICATION.md` so the current build contract explicitly states that `dist/` must contain only `SnapBeforeWatchTower`.
+- Keep the final source ZIP free of generated `dist/` content, `.venv-build`, PyInstaller `build/`, bytecode, caches, backups, and temporary files. The build script creates `dist/` locally when run.
+- The hosted verification environment still lacks a locally installable PyInstaller/Paho toolchain, so an actual ELF build is not claimed. The build-layout contract is instead checked statically and with a controlled stub-build harness in addition to the application regression suite.
 
 ## 0.0.11 — 2026-10-02
 

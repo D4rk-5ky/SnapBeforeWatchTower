@@ -26,7 +26,7 @@ python3 SnapBeforeWatchTower.py --version
 sudo ./dist/SnapBeforeWatchTower -c config.toml
 ```
 
-The PyInstaller build is produced by `./build-pyinstaller.sh` at `dist/SnapBeforeWatchTower`. It bundles Python plus Paho MQTT; external host commands such as ZFS, Docker, and `mail` remain system requirements.
+The PyInstaller build is produced by `./build-pyinstaller.sh` at `dist/SnapBeforeWatchTower`. All generated build state (virtual environment, pip cache, PyInstaller work files, and PyInstaller config/cache) is kept under the gitignored `.build-pyinstaller/` directory. The build script cleans generated/stale `dist/` content while retaining `dist/README.md`, and fails unless the final directory contains exactly `SnapBeforeWatchTower` and `README.md`. It bundles Python plus Paho MQTT; external host commands such as ZFS, Docker, and `mail` remain system requirements.
 
 There are no separate public flags for command mode, datasets, retention, mail, MQTT, or dry-run. Those runtime settings belong in TOML so one file describes the whole job.
 

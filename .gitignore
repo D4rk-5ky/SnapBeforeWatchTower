@@ -15,8 +15,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 build/
+.venv-build/
+.build-pyinstaller/
 dist/*
 !dist/README.md
 *.egg-info/
-
-.venv-build/

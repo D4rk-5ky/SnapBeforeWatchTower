@@ -27,6 +27,14 @@ SUPPORTED_KEYS = set(DEFAULTS) | {'host', 'topic'}
 OPTIONAL_STRING_KEYS = ['username', 'password', 'ca_file', 'cert_file', 'key_file']
 
 
+class MQTTPublishError(RuntimeError):
+    """Safe parent-side MQTT worker failure with a non-secret reason class."""
+
+    def __init__(self, reason='UnknownError'):
+        self.reason = reason if isinstance(reason, str) and reason else 'UnknownError'
+        super().__init__(f'MQTT publish worker failed ({self.reason})')
+
+
 def validate_config(supplied, base_dir, dry_run=False, enabled=True):
     """Validate the TOML [mqtt] settings; disabled MQTT needs no dependency or broker details."""
     if not isinstance(supplied, dict):
@@ -140,14 +148,24 @@ def build_payload(config, command, version, exc, errors, run_id, dry_run=False):
 
 def publish_report(config, payload):
     """Use a killable worker to bound DNS/connect/publish time; keep credentials off argv."""
+    if getattr(sys, 'frozen', False):
+        # A frozen executable cannot launch mqtt_report.py directly because source
+        # modules live inside the bundle. Re-execute the app with a private worker
+        # switch instead. Configuration and credentials stay on stdin, not argv.
+        worker_command = [sys.executable, '--mqtt-publish-worker']
+    else:
+        worker_command = [sys.executable, '-B', str(Path(__file__).resolve()), '--publish']
     result = subprocess.run(
-        [sys.executable, '-B', str(Path(__file__).resolve()), '--publish'],
+        worker_command,
         input=json.dumps({'config': config, 'payload': payload}),
         text=True, capture_output=True, timeout=config['timeout'],
     )
     if result.returncode != 0:
-        # Worker/library output could contain broker details; do not copy it to logs.
-        raise RuntimeError('MQTT publish failed; check broker, authentication, TLS, and topic permissions')
+        # The worker writes only an exception class name, never exception text or credentials.
+        reason = (result.stderr or '').strip()
+        if not reason.replace('_', '').isalnum() or len(reason) > 80:
+            reason = 'UnknownError'
+        raise MQTTPublishError(reason or 'UnknownError')
 
 
 class RunReporter:
@@ -182,10 +200,19 @@ class RunReporter:
             if payload['status'] == 'success' and not self.config['on_success']:
                 logger.info('%sMQTT success report suppressed because on_success=false', '[DRY-RUN] ' if self.dry_run else '')
                 return False
+            logger.info(
+                'MQTT final %s report enabled; attempting publish%s',
+                payload['status'], ' [DRY-RUN]' if self.dry_run else '',
+            )
             publish_report(self.config, payload)
             logger.info('MQTT final %s report published%s', payload['status'], ' [DRY-RUN]' if self.dry_run else '')
         except subprocess.TimeoutExpired:
             logger.error('MQTT report timed out; delivery is unconfirmed')
+        except MQTTPublishError as publish_error:
+            logger.error(
+                'MQTT report failed in worker (%s); check broker, authentication, TLS, dependency, and topic permissions',
+                publish_error.reason,
+            )
         except Exception:
             logger.error('MQTT report failed; check broker, authentication, TLS, dependency, and topic permissions')
         return False
@@ -219,5 +246,8 @@ if __name__ == '__main__':
         sys.exit('Internal MQTT worker; use SnapBeforeWatchTower.py -c CONFIG')
     try:
         worker()
-    except Exception:
+    except Exception as exc:
+        # Only expose the exception class to the parent. Never print exception text,
+        # broker credentials, or the JSON request.
+        sys.stderr.write(type(exc).__name__)
         sys.exit(1)

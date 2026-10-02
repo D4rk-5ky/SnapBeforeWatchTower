@@ -15,5 +15,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 build/
-dist/
+dist/*
+!dist/README.md
 *.egg-info/
+
+.venv-build/

@@ -1,4 +1,4 @@
-# Release verification — 0.0.8
+# Release verification — 0.0.11
 
 Date: 2026-10-02
 
@@ -6,131 +6,133 @@ Date: 2026-10-02
 
 | Check | Result |
 | --- | --- |
-| Version increment | PASS — 0.0.7 -> 0.0.8 |
-| Python unit/regression suite | PASS — 37/37 tests |
-| Python compile checks | PASS — `SnapBeforeWatchTower.py`, `mqtt_report.py`, `tests/test_app.py`, and `tests/test_mqtt.py` compile successfully |
-| Public CLI help | PASS — both `-h` and `--help` exit 0 and document `-c CONFIG`, `-h`/`--help`, `--version`, and that operational settings remain TOML-only |
-| Public CLI version | PASS — `--version` exits 0 without configuration and prints `SnapBeforeWatchTower.py 0.0.8` |
-| Operational CLI boundary | PASS — missing `-c`, retired `--config`, and retired CLI `--dry-run` remain rejected with exit code 2 |
-| TOML example parse | PASS — `config-example.toml` loads through the real application loader with `command=create`, `dry_run=true`, mail disabled, and MQTT disabled |
-| TOML documentation coverage | PASS — all 22 assignments in `config-example.toml` are represented in both README.md and `config.example.md` |
-| Notification-policy regression coverage | PASS — mail and MQTT success reports are gated independently by `on_success`; enabled failure reporting remains active with `on_success=false`; both rules are tested in dry-run, and MQTT is tested in real runs too |
-| MQTT dry-run report metadata | PASS — published MQTT payloads include `dry_run=true|false`; dry-run is no longer globally suppressed |
-| MQTT dependency boundary | PASS — enabled MQTT requires `paho-mqtt` in both real and dry-run configuration validation because dry-run failures can publish |
-| Home Assistant YAML parse | PASS — supplied automation parses as YAML and reads `dry_run` for `DRY-RUN`/`LIVE` notification mode text |
-| README current-behavior check | PASS — README contains no release-version history/version number and documents only the current interface/behavior |
-| commented_code_map symbol coverage | PASS — every current Python class/function/method name in the application and tests is represented |
-| Requested disclaimer | PASS — the supplied disclaimer/liability text is present verbatim in both README.md and `SAFETY.md` |
-| `.gitignore` example handling | PASS — private `config.toml` and `datasets` remain ignored; `config-example.toml`, `config.example.md`, and `datasets.example.txt` are trackable |
-| Original-project manifest preservation | PASS — all 15 file paths from the supplied 0.0.7 archive are retained; no project path was removed or added |
-| Cache/build/temp exclusions | PASS — final package contains no `__pycache__`, `.pyc`, `.pyo`, `.pytest_cache`, build/dist, backup, or temporary artifacts |
-| ZIP integrity and fresh extraction | PASS — `unzip -t` reports no errors and a fresh extraction is byte-for-byte equal to the prepared 0.0.8 project tree |
-| Final ZIP manifest vs supplied archive | PASS — both contain the same 15 project file paths; no forbidden cache/build/temp entries are present |
+| Version increment | PASS — 0.0.10 -> 0.0.11 |
+| Python unit/regression suite | PASS — 49/49 tests |
+| Python compile checks | PASS — all application/test Python files compile successfully in memory |
+| Source CLI help | PASS — `-h` and `--help` exit 0 and document `-c CONFIG` plus `--version` |
+| Source CLI version | PASS — `--version` exits 0 and reports `SnapBeforeWatchTower.py 0.0.11` |
+| Public CLI boundary | PASS — operational values remain TOML-only; the private MQTT worker switch is accepted only by a frozen executable |
+| Frozen MQTT worker design | PASS — unit regression proves frozen publishing re-executes only the standalone binary plus `--mqtt-publish-worker`; broker config/password remain in stdin JSON rather than argv |
+| Frozen worker entry point | PASS — unit regression proves frozen `--mqtt-publish-worker` invokes the worker without requiring `-c CONFIG` |
+| Frozen log directory | PASS — unit regression proves frozen mode uses the executable directory; source mode keeps the source directory; non-root fallback remains `/tmp/SnapBeforeWatchTower` |
+| PyInstaller spec | PASS — one-file console executable named `SnapBeforeWatchTower`; all `paho` submodules explicitly collected |
+| Build requirements | PASS — `requirements-build.txt` pins `pyinstaller==6.22.3` and `paho-mqtt==2.1.0` |
+| Build script syntax/layout | PASS — shell syntax valid; script builds from project root, cleans stale `build/`/`dist/`, targets `dist/SnapBeforeWatchTower`, then smoke-tests frozen `--help` and `--version` |
+| Third-party runtime module audit | PASS — application runtime uses only Python standard library plus Paho MQTT; Paho is explicitly included by the spec |
+| Existing dry-run success/failure reporting | PASS — combined mail+MQTT dry-run success regression and failure-report regressions remain green |
+| Continuation behavior | PASS — missing-dataset and other checked per-dataset list/destroy continue/stop behavior remains unchanged and covered |
+| Dry-run mutation safety | PASS — create/destroy/log deletion/Docker digest capture remain suppressed; snapshot listing remains real |
+| Configuration compatibility | PASS — no TOML setting names/defaults changed in 0.0.11 |
+| TOML example/documentation coverage | PASS — `config-example.toml` parses with 24 assignments across `[application]`, `[mail]`, and `[mqtt]`; every setting is represented in README.md and `config.example.md` |
+| Home Assistant integration | PASS — MQTT payload contract is unchanged and the supplied HA automation parses successfully as YAML |
+| Disclaimer | PASS — requested disclaimer text remains present in both README.md and SAFETY.md |
+| `.gitignore` build handling | PASS — generated `dist/SnapBeforeWatchTower`, `.venv-build/`, and `build/` are ignored; `dist/README.md` and shipped examples remain trackable |
+| Cache/build/temp exclusion | PASS — prepared release tree contains no `.venv-build`, `build/`, `__pycache__`, `.pyc`, `.pyo`, `.pytest_cache`, backup, or temporary artifacts |
+| Actual PyInstaller binary build in this sandbox | NOT RUN — PyInstaller/Paho were not preinstalled and the sandbox could not resolve/reach PyPI/files.pythonhosted.org, so build dependencies could not be installed |
 
-## Notification behavior verified
+## PyInstaller build behavior
 
-Mail and MQTT now follow the same selection policy while remaining independently configurable:
+The included build entry point is:
 
-| Channel configuration | Successful live run | Successful dry-run | Failed live run | Failed dry-run |
+```bash
+./build-pyinstaller.sh
+```
+
+It creates/uses `.venv-build`, installs `requirements-build.txt`, builds the one-file Linux executable, and verifies:
+
+```text
+dist/SnapBeforeWatchTower --help
+dist/SnapBeforeWatchTower --version
+```
+
+The build is fail-fast: if the executable is not created or either smoke check fails, the script exits nonzero.
+
+`SnapBeforeWatchTower.spec` uses `collect_submodules('paho')`, so the final frozen application contains the optional MQTT Python package even though application validation/import paths are dynamic. Standard-library modules and the active Python interpreter are handled by PyInstaller. External host programs (`zfs`, `docker`, and `mail`) are intentionally not bundled.
+
+The frozen MQTT timeout worker cannot execute `mqtt_report.py` as a source file because one-file modules live inside the bundle. Frozen mode therefore re-executes the same `dist/SnapBeforeWatchTower` executable with the private `--mqtt-publish-worker` switch. Configuration and credentials still travel only via stdin JSON. Source mode keeps the existing `python mqtt_report.py --publish` behavior.
+
+PyInstaller one-file `__file__` points into a temporary extraction tree. `runtime_base_dir()` therefore uses `sys.executable` when frozen, so root-run persistent logs are placed under `dist/logs/` rather than disappearing with the temporary extraction directory.
+
+## Build limitation in this verification environment
+
+The hosted sandbox used to prepare 0.0.11 could not resolve or connect to PyPI/files.pythonhosted.org. It also had no PyInstaller or Paho installation/wheel cache available. As a result, the actual ELF executable could not be generated or executed here.
+
+This release does **not** claim that an unbuilt binary was tested. The final archive contains the complete pinned build recipe and the required `dist/` output layout documentation. Running `./build-pyinstaller.sh` on a Linux build host with package access will create `dist/SnapBeforeWatchTower` and perform its built-in smoke checks.
+
+## Existing notification behavior regression
+
+For an overall successful run, mail and MQTT remain independent:
+
+| Channel state | Successful live run | Successful dry-run | Failed live run | Failed dry-run |
 | --- | --- | --- | --- | --- |
-| `enabled=false` | no report | no report | no report | no report |
-| `enabled=true`, `on_success=false` | no success report | no success report | failure report | failure report |
-| `enabled=true`, `on_success=true` | success report | success report | failure report | failure report |
+| `enabled = false` | No report | No report | No report | No report |
+| `enabled = true`, `on_success = false` | No success report | No success report | Failure report | Failure report |
+| `enabled = true`, `on_success = true` | Success report | Success report | Failure report | Failure report |
 
-`[mail].on_success` affects only mail. `[mqtt].on_success` affects only MQTT. Mail dry-run subjects/introduction text identify the run as dry-run. MQTT payloads always include a `dry_run` boolean when a report is published.
+A combined full-`main()` regression still proves one successful `dry_run=true` run with both mail and MQTT enabled and both `on_success=true` attempts both notification transports.
 
-The supplied Home Assistant automation keeps the existing `status=success` / `status=failure` branching and adds visible `Mode: DRY-RUN` or `Mode: LIVE` text from the payload.
+## Continuation behavior regression
 
-## CLI behavior verified
+| Failure type | Setting | Behavior | Final result |
+| --- | --- | --- | --- |
+| ZFS explicitly reports configured dataset nonexistent | `continue_on_missing_dataset = true` | Record failure and continue with next configured dataset | Failure |
+| ZFS explicitly reports configured dataset nonexistent | `continue_on_missing_dataset = false` | Stop immediately | Failure |
+| Other checked per-dataset `zfs list`/`zfs destroy` failure | `continue_on_other_failures = true` | Record failure and continue with next configured dataset | Failure |
+| Other checked per-dataset `zfs list`/`zfs destroy` failure | `continue_on_other_failures = false` | Stop immediately | Failure |
+| Non-missing `zfs snapshot` failure | either value | Stop immediately | Failure |
+| Config/root/input/global failure | either value | Stop immediately | Failure |
 
-Normal operation remains:
+Recorded continuation failures still become final failures, so enabled mail/MQTT reports failure regardless of `on_success`.
 
-```text
-sudo python3 SnapBeforeWatchTower.py -c config.toml
-```
+## Destructive-safety boundaries
 
-Informational interfaces remain:
+Version 0.0.11 changes standalone packaging/frozen-runtime support only. It does not change:
 
-```text
-python3 SnapBeforeWatchTower.py --help
-python3 SnapBeforeWatchTower.py --version
-```
+- snapshot naming;
+- managed snapshot matching;
+- retention age/count calculations;
+- `zfs destroy` target selection;
+- `continue_on_missing_dataset` or `continue_on_other_failures` semantics;
+- dry-run mutation suppression;
+- Docker digest behavior;
+- root enforcement;
+- TOML setting names/defaults;
+- mail success/failure policy;
+- MQTT success/failure policy, payload fields, QoS, retain, TLS, authentication, or timeout;
+- Home Assistant automation behavior.
 
-`--help` and `--version` are handled by `argparse` before `load_app_config()` is called, so they do not require a TOML file and do not enter logging, root enforcement, ZFS, Docker, mail, or MQTT operation paths.
+## Manifest comparison against 0.0.10
 
-Operational settings were intentionally **not** restored as command-line flags. Create/delete mode, dataset file, retention, dry-run, mail, and MQTT remain configured in TOML.
+All 15 paths from the supplied 0.0.10 release are retained. Four intentional files are added for PyInstaller/build output documentation, making 19 project paths in the prepared 0.0.11 source tree.
 
-## Destructive safety behavior intentionally unchanged
+Added:
 
-Version 0.0.8 changes notification/report selection only. It does not change snapshot naming, retention selection, count-floor behavior, age cutoff behavior, managed snapshot filtering, `zfs destroy` selection, Docker digest capture semantics, root enforcement, missing-dataset continuation/final-failure behavior, mail transport command construction, MQTT QoS/retain/TLS/auth/timeout behavior, broker credential transport, or dry-run mutation suppression.
+- `SnapBeforeWatchTower.spec`
+- `build-pyinstaller.sh`
+- `requirements-build.txt`
+- `dist/README.md`
 
-Dry-run still suppresses snapshot creation, snapshot destruction, old-log deletion, and Docker digest collection while retaining real ZFS snapshot listing for an accurate retention preview. The notification transports are intentionally **not** suppressed in dry-run anymore; they follow the same success/failure policy shown above.
-
-The application can still perform destructive ZFS snapshot deletion and managed log-file deletion during real runs. The requested disclaimer remains included in README.md and `SAFETY.md`; the example configuration still defaults to `dry_run = true` with mail and MQTT disabled.
-
-## `.gitignore` behavior verified
-
-Version 0.0.8 preserves the corrected rules from 0.0.7:
-
-```text
-config*
-!config-example.toml
-!config.example.md
-
-!datasets.example.txt
-```
-
-A disposable Git repository check confirmed:
-
-- `config.toml` — ignored
-- `config-example.toml` — trackable
-- `config.example.md` — trackable
-- `datasets.example.txt` — trackable
-- `datasets` — ignored
-
-## Manifest comparison
-
-The supplied 0.0.7 archive and the 0.0.8 project both contain these 15 project paths:
+Changed:
 
 - `.gitignore`
-- `README.md`
-- `SAFETY.md`
-- `SnapBeforeWatchTower.py`
-- `VERIFICATION.md`
-- `VERSIONING.md`
-- `commented_code_map.md`
-- `config-example.toml`
-- `config.example.md`
-- `datasets.example.txt`
-- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml`
-- `mqtt_report.py`
-- `requirements-mqtt.txt`
-- `tests/test_app.py`
-- `tests/test_mqtt.py`
-
-Changed from the supplied 0.0.7 baseline:
-
 - `README.md`
 - `SnapBeforeWatchTower.py`
 - `VERIFICATION.md`
 - `VERSIONING.md`
 - `commented_code_map.md`
-- `config-example.toml`
 - `config.example.md`
-- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml`
 - `mqtt_report.py`
 - `tests/test_app.py`
 - `tests/test_mqtt.py`
 
-Unchanged from the supplied 0.0.7 baseline:
+Unchanged:
 
-- `.gitignore`
 - `SAFETY.md`
+- `config-example.toml`
 - `datasets.example.txt`
+- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml`
 - `requirements-mqtt.txt`
 
 ## What was not live-tested
 
-No real ZFS snapshot was created or destroyed. No live Docker daemon digest capture, local `mail` delivery, MQTT broker connection, TLS/authentication exchange, Home Assistant automation execution, or Pushover delivery was performed.
-
-The regression suite mocks external operations and verifies the application safety boundaries, notification selection, payload construction, and command ordering offline. Real-host ZFS permissions/error wording, local mail configuration, broker connectivity/credentials/TLS, and Home Assistant/Pushover execution should still be validated on the target system before production use.
+No real ZFS snapshot was created or destroyed. No live Docker digest capture, local mail delivery, MQTT broker/TLS/authentication exchange, Home Assistant automation execution, or Pushover delivery was performed. The actual PyInstaller executable could not be built in this sandbox for the dependency-download reason documented above.

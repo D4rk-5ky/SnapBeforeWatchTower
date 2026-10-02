@@ -12,9 +12,9 @@ from typing import List, Tuple, Optional
 import tempfile
 import tomllib
 from pathlib import Path
-from mqtt_report import RunReporter, validate_config as validate_mqtt_config
+from mqtt_report import RunReporter, validate_config as validate_mqtt_config, worker as mqtt_worker
 
-__version__ = "0.0.8"
+__version__ = "0.0.11"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -113,6 +113,13 @@ def choose_log_folder(preferred_root_folder: str, fallback_folder: str | None = 
     os.makedirs(fallback_folder, exist_ok=True)
     return fallback_folder
 
+def runtime_base_dir() -> str:
+    """Return the persistent application directory for source and frozen execution."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def pick_log_folder(script_log_folder: str, tmp_name: str = "SnapBeforeWatchTower") -> str:
     """
     Policy:
@@ -153,13 +160,26 @@ class CommandError(RuntimeError):
 
 
 class MissingDatasetsError(RuntimeError):
-    """Final run failure raised after all remaining datasets were processed."""
+    """Final run failure raised for one or more configured datasets that do not exist."""
 
     def __init__(self, datasets):
         self.datasets = tuple(datasets)
         label = "dataset" if len(self.datasets) == 1 else "datasets"
         names = ", ".join(self.datasets)
         super().__init__(f"Missing ZFS {label} (dataset does not exist): {names}")
+
+
+class DatasetCommandFailuresError(RuntimeError):
+    """Final run failure after continuable per-dataset ZFS list/destroy errors were recorded."""
+
+    def __init__(self, failures, missing_datasets=()):
+        self.failures = tuple(failures)
+        self.missing_datasets = tuple(missing_datasets)
+        failed_names = ", ".join(dataset for dataset, _exc in self.failures)
+        parts = [f"ZFS list/destroy failure on dataset(s): {failed_names}"]
+        if self.missing_datasets:
+            parts.append("missing dataset(s): " + ", ".join(self.missing_datasets))
+        super().__init__("; ".join(parts))
 
 
 def is_missing_dataset_error(exc):
@@ -172,16 +192,71 @@ def is_missing_dataset_error(exc):
 
 
 def remember_missing_dataset(error_logger, missing_datasets, dataset, exc):
-    """Record a known missing-dataset failure and tell the caller whether it may continue."""
+    """Record a known missing-dataset failure once; continuation is decided by configuration."""
     if not is_missing_dataset_error(exc):
         return False
     if dataset not in missing_datasets:
         missing_datasets.append(dataset)
     error_logger.error(
         f"Missing ZFS dataset: {dataset}. ZFS reported that the dataset does not exist; "
-        "continuing with the remaining datasets."
+        "recorded as a run failure."
     )
     return True
+
+
+def is_checked_zfs_list_or_destroy_error(exc):
+    """Return True only for checked ZFS list/destroy failures raised by run_cmd()."""
+    if not isinstance(exc, CommandError):
+        return False
+    cmd = tuple(getattr(exc, 'cmd', ()) or ())
+    return len(cmd) >= 2 and cmd[0] == 'zfs' and cmd[1] in {'list', 'destroy'}
+
+
+def remember_dataset_command_failure(error_logger, failures, dataset, exc):
+    """Record one continuable per-dataset ZFS list/destroy failure for final run failure."""
+    failures.append((dataset, exc))
+    command = ' '.join(getattr(exc, 'cmd', ()) or ())
+    detail = (getattr(exc, 'stderr', '') or '').strip()
+    suffix = f": {detail}" if detail else ''
+    error_logger.error(
+        f"ZFS command failure for dataset {dataset}: {command}{suffix}. Recorded as a run failure."
+    )
+
+
+def handle_dataset_command_failure(
+    error_logger,
+    dataset,
+    exc,
+    missing_datasets,
+    other_failures,
+    continue_on_missing_dataset,
+    continue_on_other_failures,
+):
+    """Apply the two per-dataset continuation policies; return True when caller should continue."""
+    if is_missing_dataset_error(exc):
+        remember_missing_dataset(error_logger, missing_datasets, dataset, exc)
+        if continue_on_missing_dataset:
+            error_logger.error(
+                f"continue_on_missing_dataset=true; continuing with the next configured dataset after {dataset}."
+            )
+            return True
+        error_logger.error(
+            f"continue_on_missing_dataset=false; stopping immediately after missing dataset {dataset}."
+        )
+        raise MissingDatasetsError([dataset]) from exc
+
+    if is_checked_zfs_list_or_destroy_error(exc):
+        if continue_on_other_failures:
+            remember_dataset_command_failure(error_logger, other_failures, dataset, exc)
+            error_logger.error(
+                f"continue_on_other_failures=true; continuing with the next configured dataset after {dataset}."
+            )
+            return True
+        error_logger.error(
+            f"continue_on_other_failures=false; stopping immediately after ZFS command failure on {dataset}."
+        )
+
+    return False
 
 
 def run_cmd(cmd, logger=None, error_logger=None, check=True, dry_run=False):
@@ -294,23 +369,25 @@ def MailTo(
     mail_exit_code, stderr_output = send_mail(subject, body, recipient, attachment_files)
 
     if mail_exit_code == 0:
-        WasMailSent(logger, error_logger, 0, "")
-    else:
-        WasMailSent(logger, error_logger, mail_exit_code, stderr_output)
+        return WasMailSent(logger, error_logger, 0, "")
+    return WasMailSent(logger, error_logger, mail_exit_code, stderr_output)
 
 
 def WasMailSent(logger, error_logger, MailExitCode, popenstderr):
+    """Log mail transport outcome and return True only when the mail command succeeds."""
     if MailExitCode == 0:
         print_separator(logger)
         logger.info('Mail was sent successfully')
-    else:
-        print_separator(logger, error_logger)
-        error_logger.error('There was an error sending the mail')
-        error_logger.error('This is what popen said')
-        error_logger.error('')
-        error_logger.error(popenstderr)
-        error_logger.error('')
-        error_logger.error('----------')
+        return True
+
+    print_separator(logger, error_logger)
+    error_logger.error(f'There was an error sending the mail (exit code {MailExitCode})')
+    error_logger.error('This is what popen said')
+    error_logger.error('')
+    error_logger.error(popenstderr or 'No stderr was returned by the mail command')
+    error_logger.error('')
+    error_logger.error('----------')
+    return False
 
 def parse_older_than(value):
     pattern = r'^(\d+)([dwm])$'
@@ -596,12 +673,16 @@ def load_app_config(path):
     application = document.get('application')
     if not isinstance(application, dict):
         raise ValueError('missing required [application] table')
-    app_keys = {'command', 'dataset_file', 'older_than', 'retain_count', 'dry_run'}
+    app_keys = {
+        'command', 'dataset_file', 'older_than', 'retain_count', 'dry_run',
+        'continue_on_missing_dataset', 'continue_on_other_failures',
+    }
+    required_app_keys = {'command', 'dataset_file', 'older_than', 'retain_count', 'dry_run'}
     unknown_app = set(application) - app_keys
     if unknown_app:
         names = ', '.join(sorted(unknown_app))
         raise ValueError(f'[application] contains unsupported key(s): {names}')
-    missing_app = app_keys - set(application)
+    missing_app = required_app_keys - set(application)
     if missing_app:
         names = ', '.join(sorted(missing_app))
         raise ValueError(f'[application] is missing required key(s): {names}')
@@ -632,6 +713,12 @@ def load_app_config(path):
     dry_run = application['dry_run']
     if type(dry_run) is not bool:
         raise ValueError('[application].dry_run must be true or false')
+    continue_on_missing_dataset = application.get('continue_on_missing_dataset', True)
+    if type(continue_on_missing_dataset) is not bool:
+        raise ValueError('[application].continue_on_missing_dataset must be true or false')
+    continue_on_other_failures = application.get('continue_on_other_failures', True)
+    if type(continue_on_other_failures) is not bool:
+        raise ValueError('[application].continue_on_other_failures must be true or false')
 
     mail = document.get('mail', {})
     if not isinstance(mail, dict):
@@ -680,12 +767,27 @@ def load_app_config(path):
         send_mail=recipient,
         mail_on_success=mail_on_success,
         dry_run=dry_run,
+        continue_on_missing_dataset=continue_on_missing_dataset,
+        continue_on_other_failures=continue_on_other_failures,
         config_path=str(config_path),
     )
     return args, mqtt_config
 
 
 def main():
+    # Private entry point used only by the frozen PyInstaller executable for the
+    # bounded MQTT publish worker. Keeping configuration JSON on stdin ensures
+    # broker credentials never appear in the process command line.
+    if getattr(sys, "frozen", False) and sys.argv[1:] == ["--mqtt-publish-worker"]:
+        try:
+            mqtt_worker()
+        except Exception as exc:
+            # Match mqtt_report.py's source-mode worker contract: expose only the
+            # exception class, never exception text, credentials, or request JSON.
+            sys.stderr.write(type(exc).__name__)
+            raise SystemExit(1)
+        return
+
     parser = argparse.ArgumentParser(
         usage='%(prog)s -c CONFIG',
         description='Run SnapBeforeWatchTower using one TOML configuration file.',
@@ -714,13 +816,24 @@ def run(args, reporter):
 
     log_date = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
     # Pick log folder: root-only folder if root, otherwise /tmp fallback
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    preferred_log_folder = os.path.join(SCRIPT_DIR, "logs")
+    # In a PyInstaller one-file build, __file__ points into the temporary bundle
+    # extraction directory. runtime_base_dir() keeps persistent logs beside the
+    # executable while preserving the existing source-mode location.
+    preferred_log_folder = os.path.join(runtime_base_dir(), "logs")
     log_folder = pick_log_folder(preferred_log_folder)
 
     # Create separate loggers for main logs and error logs
     logger, error_logger, err_filepath = setup_logger(log_folder, log_date)
     reporter.attach(error_logger)
+
+    mqtt_config = getattr(reporter, 'config', None)
+    mqtt_enabled = bool(mqtt_config)
+    mqtt_on_success = bool(mqtt_config.get('on_success', False)) if mqtt_enabled else False
+    logger.info(
+        "Notification policy: dry_run=%s; mail_enabled=%s; mail_on_success=%s; "
+        "mqtt_enabled=%s; mqtt_on_success=%s",
+        dry_run, bool(args.send_mail), bool(args.mail_on_success), mqtt_enabled, mqtt_on_success,
+    )
 
     if dry_run:
         logger.info("========== DRY-RUN MODE ENABLED ==========")
@@ -750,6 +863,9 @@ def run(args, reporter):
 
     had_error = False
     missing_datasets = []
+    other_dataset_failures = []
+    continue_on_missing_dataset = getattr(args, 'continue_on_missing_dataset', True)
+    continue_on_other_failures = getattr(args, 'continue_on_other_failures', True)
 
     try:
         # Read the dataset file inside the try block, so bad paths also trigger error mail.
@@ -774,13 +890,24 @@ def run(args, reporter):
 
                     delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
                 except (subprocess.CalledProcessError, CommandError) as exc:
-                    if remember_missing_dataset(error_logger, missing_datasets, dataset, exc):
+                    if handle_dataset_command_failure(
+                        error_logger,
+                        dataset,
+                        exc,
+                        missing_datasets,
+                        other_dataset_failures,
+                        continue_on_missing_dataset,
+                        continue_on_other_failures,
+                    ):
                         continue
                     raise
 
             print_separator(logger)
-            if missing_datasets:
-                logger.info("Snapshot creation processing completed; missing datasets were skipped and recorded as a final failure.")
+            if missing_datasets or other_dataset_failures:
+                logger.info(
+                    "Snapshot creation processing completed; one or more per-dataset failures were "
+                    "recorded and the final run result will be failure."
+                )
             else:
                 logger.info("Snapshot creation completed.")
 
@@ -796,7 +923,15 @@ def run(args, reporter):
                 try:
                     delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
                 except CommandError as exc:
-                    if remember_missing_dataset(error_logger, missing_datasets, dataset, exc):
+                    if handle_dataset_command_failure(
+                        error_logger,
+                        dataset,
+                        exc,
+                        missing_datasets,
+                        other_dataset_failures,
+                        continue_on_missing_dataset,
+                        continue_on_other_failures,
+                    ):
                         print_separator(logger)
                         continue
                     raise
@@ -804,8 +939,11 @@ def run(args, reporter):
                 print_separator(logger)
 
 
-            if missing_datasets:
-                logger.info("Snapshot deletion processing completed; missing datasets were skipped and recorded as a final failure.")
+            if missing_datasets or other_dataset_failures:
+                logger.info(
+                    "Snapshot deletion processing completed; one or more per-dataset failures were "
+                    "recorded and the final run result will be failure."
+                )
             else:
                 logger.info("Snapshot deletion completed.")
 
@@ -813,8 +951,32 @@ def run(args, reporter):
 
             delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run)
 
+        if other_dataset_failures:
+            raise DatasetCommandFailuresError(other_dataset_failures, missing_datasets)
         if missing_datasets:
             raise MissingDatasetsError(missing_datasets)
+
+    except DatasetCommandFailuresError as e:
+        had_error = True
+        error_logger.error(f"Run failed after continuing past one or more per-dataset ZFS command failures: {e}")
+
+        if args.send_mail:
+            try:
+                MailTo(
+                    logger,
+                    error_logger,
+                    recipient=args.send_mail,
+                    log_folder=log_folder,
+                    subject=f"{report_prefix} FAILED - dataset command failure",
+                    intro=(
+                        ("SnapBeforeWatchTower dry-run continued past configured per-dataset ZFS command failures, but the run " if dry_run
+                         else "SnapBeforeWatchTower continued past configured per-dataset ZFS command failures, but the run ")
+                        + f"still failed. {e}"
+                    ),
+                )
+            except Exception as mail_e:
+                error_logger.error(f"Additionally failed to send mail: {mail_e}")
+        raise
 
     except MissingDatasetsError as e:
         had_error = True
@@ -829,9 +991,15 @@ def run(args, reporter):
                     log_folder=log_folder,
                     subject=f"{report_prefix} FAILED - missing dataset",
                     intro=(
-                        ("SnapBeforeWatchTower dry-run processed the remaining configured datasets, but the run " if dry_run
-                         else "SnapBeforeWatchTower processed the remaining configured datasets, but the run ")
-                        + f"failed because one or more ZFS datasets do not exist. {e}"
+                        (
+                            ("SnapBeforeWatchTower dry-run processed the remaining configured datasets, but the run " if dry_run
+                             else "SnapBeforeWatchTower processed the remaining configured datasets, but the run ")
+                            if continue_on_missing_dataset
+                            else
+                            ("SnapBeforeWatchTower dry-run stopped immediately because a configured ZFS dataset does not exist. " if dry_run
+                             else "SnapBeforeWatchTower stopped immediately because a configured ZFS dataset does not exist. ")
+                        )
+                        + f"The run failed. {e}"
                     ),
                 )
             except Exception as mail_e:
@@ -860,8 +1028,12 @@ def run(args, reporter):
     finally:
         # If run was successful and user asked for mail on success
         if (not had_error) and args.send_mail and args.mail_on_success:
+            logger.info(
+                "Success mail report enabled; attempting %s success mail delivery.",
+                "DRY-RUN" if dry_run else "LIVE",
+            )
             try:
-                MailTo(
+                delivered = MailTo(
                     logger,
                     error_logger,
                     recipient=args.send_mail,
@@ -869,8 +1041,17 @@ def run(args, reporter):
                     subject=f"{report_prefix} SUCCESS - logs attached",
                     intro=("SnapBeforeWatchTower dry-run completed successfully. Logs attached." if dry_run else "SnapBeforeWatchTower completed successfully. Logs attached."),
                 )
+                if delivered is False:
+                    error_logger.error(
+                        "Success mail report was attempted but the local mail command reported delivery failure."
+                    )
             except Exception as mail_e:
                 error_logger.error(f"Failed to send success mail: {mail_e}")
+        elif (not had_error) and args.send_mail:
+            logger.info(
+                "Success mail report suppressed because [mail].on_success=false%s.",
+                " (DRY-RUN)" if dry_run else "",
+            )
 
         # Check if the .err file is empty, and remove it if it is
         if os.path.exists(err_filepath) and os.path.getsize(err_filepath) == 0:

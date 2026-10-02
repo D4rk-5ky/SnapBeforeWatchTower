@@ -21,6 +21,7 @@ DEFAULTS = {
     'cert_file': None,
     'key_file': None,
     'timeout': 15,
+    'on_success': False,
 }
 SUPPORTED_KEYS = set(DEFAULTS) | {'host', 'topic'}
 OPTIONAL_STRING_KEYS = ['username', 'password', 'ca_file', 'cert_file', 'key_file']
@@ -51,6 +52,8 @@ def validate_config(supplied, base_dir, dry_run=False, enabled=True):
             raise ValueError(f'MQTT {key} must be an integer from {low} to {high}')
     if type(config['tls']) is not bool:
         raise ValueError('MQTT tls must be true or false')
+    if type(config['on_success']) is not bool:
+        raise ValueError('MQTT on_success must be true or false')
     if config['tls'] and 'port' not in supplied:
         config['port'] = 8883
 
@@ -79,11 +82,10 @@ def validate_config(supplied, base_dir, dry_run=False, enabled=True):
                 raise ValueError(f'MQTT {key} does not point to a file')
             config[key] = str(resolved)
 
-    if not dry_run:
-        try:
-            importlib.import_module('paho.mqtt.publish')
-        except ImportError as exc:
-            raise ValueError('MQTT requires paho-mqtt: install requirements-mqtt.txt with this Python interpreter') from exc
+    try:
+        importlib.import_module('paho.mqtt.publish')
+    except ImportError as exc:
+        raise ValueError('MQTT requires paho-mqtt: install requirements-mqtt.txt with this Python interpreter') from exc
     return config
 
 
@@ -100,7 +102,7 @@ class ErrorCapture(logging.Handler):
             self.text = (self.text + '\n' + message).strip()[-4096:]
 
 
-def build_payload(config, command, version, exc, errors, run_id):
+def build_payload(config, command, version, exc, errors, run_id, dry_run=False):
     """Describe the actual process outcome, retaining nonfatal errors as warnings."""
     code = 0
     if isinstance(exc, SystemExit):
@@ -132,6 +134,7 @@ def build_payload(config, command, version, exc, errors, run_id):
         'version': version,
         'run_id': run_id,
         'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        'dry_run': bool(dry_run),
     }
 
 
@@ -172,13 +175,15 @@ class RunReporter:
         if not self.config:
             return False
         logger = logging.getLogger('SnapBeforeWatchTower')
-        if self.dry_run:
-            logger.info('[DRY-RUN] MQTT final report suppressed')
-            return False
         try:
-            payload = build_payload(self.config, self.command, self.version, exc, self.errors.text, self.run_id)
+            payload = build_payload(
+                self.config, self.command, self.version, exc, self.errors.text, self.run_id, dry_run=self.dry_run
+            )
+            if payload['status'] == 'success' and not self.config['on_success']:
+                logger.info('%sMQTT success report suppressed because on_success=false', '[DRY-RUN] ' if self.dry_run else '')
+                return False
             publish_report(self.config, payload)
-            logger.info('MQTT final %s report published', payload['status'])
+            logger.info('MQTT final %s report published%s', payload['status'], ' [DRY-RUN]' if self.dry_run else '')
         except subprocess.TimeoutExpired:
             logger.error('MQTT report timed out; delivery is unconfirmed')
         except Exception:

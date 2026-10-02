@@ -1,6 +1,8 @@
 config*
+!config-example.toml
+!config.example.md
 
-! datasets.example.txt
+!datasets.example.txt
 
 datasets
 

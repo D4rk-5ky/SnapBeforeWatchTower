@@ -1,8 +1,52 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.6. The public application interface remains TOML-only with `-c CONFIG` as its single public CLI option.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.8. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.8 — 2026-10-02
+
+### Application code and notification behavior
+
+- Bump the application version from 0.0.7 to 0.0.8 so `--version` and MQTT release metadata identify this behavior release.
+- Add `[mqtt].on_success` with default `false`, mirroring `[mail].on_success`. When MQTT is enabled, `on_success=true` publishes successful run reports; `on_success=false` suppresses only successful reports.
+- Keep failure reporting independent from success reporting: when mail or MQTT is enabled, failures are reported regardless of that channel's `on_success` value. Mail and MQTT keep separate switches, so either channel can be success-enabled independently.
+- Apply the same notification policy during `dry_run=true`. Successful dry-runs are reported only when the corresponding channel's `on_success=true`; failed dry-runs still report when the channel is enabled. MQTT is no longer globally suppressed during dry-run.
+- Add `dry_run` boolean to every published MQTT payload so Home Assistant/other consumers can distinguish preview and live reports without changing the existing `success`/`failure` status contract.
+- Mark dry-run mail subjects and success/failure introductory text explicitly as `DRY-RUN`.
+- Require the Paho MQTT dependency whenever MQTT is enabled, including dry-run, because a failed dry-run must still be able to publish a failure report.
+- Preserve ZFS snapshot naming, snapshot/list/destroy safety, retention selection, count/age rules, Docker dry-run suppression, root enforcement, missing-dataset continuation/final-failure behavior, mail transport, MQTT QoS/retain/TLS/auth/timeout behavior, and report-failure non-masking behavior.
+
+### Configuration, documentation, tests, integration, and packaging
+
+- Add `[mqtt].on_success = false` to `config-example.toml` and `config.example.md`, and document the identical real/dry-run success/failure policy for mail and MQTT.
+- Update README.md with the current notification rules, a compact result matrix, the new MQTT payload `dry_run` field, Paho requirements for dry-run MQTT, and explicit dry-run mail behavior.
+- Update `commented_code_map.md` for the MQTT success gate, dry-run reporting, payload field, dependency behavior, and new regression tests.
+- Update the supplied Home Assistant automation to read `dry_run` from the MQTT payload and show `Mode: DRY-RUN` or `Mode: LIVE` in success/failure Pushover messages.
+- Extend tests for mail success/failure behavior in dry-run, MQTT success gating in real and dry-run runs, MQTT failure reporting despite `on_success=false`, dry-run payload metadata, and Paho dependency validation for both real and dry-run MQTT.
+- Refresh `VERIFICATION.md` and package the complete project as a clean ZIP with no cache, bytecode, build, or temporary artifacts.
+
+## 0.0.7 — 2026-10-02
+
+### Application code and behavior
+
+- Bump the application version from 0.0.6 to 0.0.7 so `--version` and MQTT release metadata identify this maintenance release.
+- Restore standard `-h`/`--help` through `argparse` and add public `--version`. Both informational flags exit before TOML loading, root checks, logging setup, ZFS/Docker/mail work, or MQTT reporting.
+- Keep `-c CONFIG` as the only operational CLI input. Create/delete mode, dataset file, retention, dry-run, mail, and MQTT settings remain TOML-only; retired operational flags are not restored.
+- Add CLI help epilog text that explicitly tells users operational settings belong in TOML.
+- Preserve snapshot naming, retention selection, managed-name filtering, missing-dataset continuation/final-failure behavior, Docker digest semantics, root enforcement, mail behavior, MQTT payload/publish behavior, and dry-run safety boundaries unchanged.
+
+### Documentation, tests, safety, and packaging
+
+- Update README.md for current behavior only with the complete public CLI (`-c`, `-h`/`--help`, `--version`), examples, and the requested disclaimer/liability text.
+- Replace the older `SAFETY.md` disclaimer wording with the requested disclaimer/liability text while retaining a SnapBeforeWatchTower-specific warning about destructive snapshot/log deletion and the no-license notice.
+- Update `config-example.toml` comments and `config.example.md` so the loadable example/reference mention help/version and continue to document every TOML setting.
+- Update `commented_code_map.md` for the public help/version behavior, new CLI regression tests, disclaimer file role, and `.gitignore` behavior.
+- Update CLI regression coverage: help must describe every public flag; version must report 0.0.7 without configuration; missing config and retired operational flags must still fail cleanly.
+- Update MQTT regression fixture version strings from 0.0.6 to 0.0.7.
+- Correct `.gitignore` so the broad private `config*` rule explicitly unignores the shipped `config-example.toml` and `config.example.md` files, and fix the malformed `datasets.example.txt` negation rule, matching the documented intent and keeping all shipped examples trackable.
+- Refresh `VERIFICATION.md` after compile, regression, CLI, config-example, documentation, manifest, and clean-package checks.
+- Preserve every project path from the supplied 0.0.6 archive and add no new project path.
 
 ## 0.0.6 — 2026-09-25
 

@@ -38,8 +38,7 @@ def temporary_directory():
 
 
 def write_config(folder, *, command='create', dataset_file='datasets.txt', older_than='7d', retain_count=10,
-                 dry_run=False, continue_on_missing_dataset=True, continue_on_other_failures=True,
-                 mail='', mqtt='', logging_settings='', report=''):
+                 dry_run=False, continue_on_missing_dataset=True, continue_on_other_failures=True, mail='', mqtt=''):
     """Write a minimal TOML config used by parser/integration tests."""
     path = Path(folder) / 'config.toml'
     path.write_text(
@@ -432,17 +431,17 @@ class BehaviorTests(unittest.TestCase):
         run.assert_not_called()
         popen.assert_not_called()
 
-    def test_runtime_base_dir_uses_actual_dist_directory_when_frozen(self):
+    def test_runtime_base_dir_keeps_project_dist_clean_when_frozen(self):
         source_dir = app.runtime_base_dir()
         self.assertEqual(source_dir, str(ROOT))
         with patch.object(app.sys, 'frozen', True, create=True), \
              patch.object(app.sys, 'executable', '/opt/sbwt/dist/SnapBeforeWatchTower'):
-            self.assertEqual(app.runtime_base_dir(), str(Path('/opt/sbwt/dist').resolve()))
+            self.assertEqual(app.runtime_base_dir(), '/opt/sbwt')
 
     def test_runtime_base_dir_uses_executable_directory_when_frozen_outside_dist(self):
         with patch.object(app.sys, 'frozen', True, create=True), \
              patch.object(app.sys, 'executable', '/opt/sbwt/bin/SnapBeforeWatchTower'):
-            self.assertEqual(app.runtime_base_dir(), str(Path('/opt/sbwt/bin').resolve()))
+            self.assertEqual(app.runtime_base_dir(), '/opt/sbwt/bin')
 
     def test_frozen_private_mqtt_worker_entrypoint_bypasses_public_cli(self):
         with patch.object(app.sys, 'frozen', True, create=True), \
@@ -782,7 +781,7 @@ class CLITests(unittest.TestCase):
     def test_version_exits_without_config(self):
         result = self.run_cli('--version')
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
-        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.16')
+        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.14')
         self.assertEqual(result.stderr, '')
 
     def test_config_is_required_and_retired_operational_flags_are_rejected(self):

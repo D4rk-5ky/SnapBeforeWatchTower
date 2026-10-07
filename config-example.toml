@@ -42,30 +42,6 @@ continue_on_missing_dataset = true
 # immediately. This does not make global/config/root/input failures recoverable.
 continue_on_other_failures = true
 
-[logging]
-# Prefix for generated .log/.err/.digest filenames. Empty uses the actual script/
-# executable basename without its final extension. Default when omitted: empty.
-# Custom prefixes start with an ASCII letter/digit and use only letters, digits,
-# dots, underscores and hyphens. No paths or wildcard characters are allowed.
-# All generated files stay in logs/ beside the actual script/executable.
-# There is no temporary fallback. An unwritable log folder stops the run before ZFS/Docker.
-# Retention and email attachments use this prefix; files with another prefix are kept.
-prefix = "SnapBeforeWatchTower"
-
-[report]
-# Optional human-readable title at the top of email and as MQTT title/name/job.
-# A nonempty value overrides [mqtt].title. Empty preserves [mqtt].title for MQTT,
-# and uses the actual script/executable basename for the email body heading.
-# This is a body heading; existing SUCCESS/FAILED/DRY-RUN email subjects are retained.
-title = "Example host - SnapBeforeWatchTower"
-
-# Optional free-form comment in email and MQTT JSON's comment field. Default: empty.
-# Double-quoted TOML strings decode \n into a real newline:
-# comment = "First line\nSecond line"
-# TOML triple-quoted multiline strings also work. No additional unescaping is done;
-# literal TOML strings retain literal backslashes. Whitespace/newlines are preserved.
-comment = ""
-
 [mail]
 # Optional mail notification feature. Set true to enable failure mail.
 enabled = false

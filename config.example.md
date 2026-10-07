@@ -26,7 +26,7 @@ python3 SnapBeforeWatchTower.py --version
 sudo ./dist/SnapBeforeWatchTower -c config.toml
 ```
 
-The PyInstaller build is produced by `bash build-pyinstaller.sh` at `dist/SnapBeforeWatchTower`. All generated build state (virtual environment, pip cache, PyInstaller work files, and PyInstaller config/cache) is kept under the gitignored `.build-pyinstaller/` directory. The build script cleans generated/stale `dist/` content while retaining `dist/README.md`, and fails unless the final directory contains exactly `SnapBeforeWatchTower` and `README.md`. It bundles Python plus Paho MQTT; external host commands such as ZFS, Docker, and `mail` remain system requirements.
+The PyInstaller build is produced by `./build-pyinstaller.sh` at `dist/SnapBeforeWatchTower`. All generated build state (virtual environment, pip cache, PyInstaller work files, and PyInstaller config/cache) is kept under the gitignored `.build-pyinstaller/` directory. The build script cleans generated/stale `dist/` content while retaining `dist/README.md`, and fails unless the final directory contains exactly `SnapBeforeWatchTower` and `README.md`. It bundles Python plus Paho MQTT; external host commands such as ZFS, Docker, and `mail` remain system requirements.
 
 There are no separate public flags for command mode, datasets, retention, mail, MQTT, or dry-run. Those runtime settings belong in TOML so one file describes the whole job.
 
@@ -43,13 +43,6 @@ retain_count = 10
 dry_run = true
 continue_on_missing_dataset = true
 continue_on_other_failures = true
-
-[logging]
-prefix = "SnapBeforeWatchTower"
-
-[report]
-title = "Example host - SnapBeforeWatchTower"
-comment = ""
 
 [mail]
 enabled = false
@@ -84,49 +77,6 @@ timeout = 15
 | `dry_run` | Yes | When `true`, preview snapshot creation/destruction and old-log deletion. Snapshot listing and logging still occur and Docker digest capture is skipped. Mail/MQTT reporting follows the normal policy: failures report when the channel is enabled; successful dry-runs require that channel's `on_success=true`. |
 | `continue_on_missing_dataset` | Default `true` | When ZFS explicitly reports a configured dataset as nonexistent, `true` records the failure and continues with the next configured dataset; `false` stops immediately. Either way, the final run is failure and enabled mail/MQTT reports it. |
 | `continue_on_other_failures` | Default `true` | For any other checked per-dataset `zfs list` or `zfs destroy` failure, `true` records the failure and continues with the next configured dataset; `false` stops immediately. It does not make global/config/root/input or unrelated snapshot-create failures recoverable. |
-
-## `[logging]` and `[report]` — optional
-
-```toml
-[logging]
-prefix = "SnapBeforeWatchTower"
-
-[report]
-title = "Example host - SnapBeforeWatchTower"
-comment = ""
-```
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `[logging].prefix` | `""` | Names the `.log`, `.err`, and `.digest` files. Empty uses the actual script/executable basename without its final extension. Custom values start with an ASCII letter/digit and use only letters, digits, dots, underscores, or hyphens. Paths, wildcard characters, and line breaks are rejected. |
-| `[report].title` | `""` | Single-line heading at the top of the email body and the MQTT `title`, `name`, and `job` fields. A nonempty value overrides `[mqtt].title`. Empty uses the script/executable basename for email and preserves `[mqtt].title` for MQTT. Existing SUCCESS/FAILED/DRY-RUN email subjects are retained. |
-| `[report].comment` | `""` | Free-form text included after the email heading and in MQTT's `comment` field. Newlines, blank lines and surrounding whitespace are preserved. NUL and non-string values are rejected. |
-
-All generated `.log`/`.err`/`.digest` files are stored in `logs/` beside the actual source script or frozen executable. This includes `dist/logs/` when the executable is run from `dist/`. There is no temporary fallback; an unwritable folder stops the run before ZFS or Docker work. Root is still required for the operation, including dry-run.
-
-Log retention and mail attachment lookup use the configured prefix. Changing it leaves previous-prefix files in place; snapshot naming and snapshot retention still use `SnapBeforeWatchTower-Date-...` and are unaffected. If mail and MQTT are disabled, report settings do not enable them.
-
-For a two-line comment, use a double-quoted TOML string with a newline escape:
-
-```toml
-[report]
-title = "Example host - SnapBeforeWatchTower"
-comment = "First line\nSecond line"
-```
-
-Or write the lines directly in a multiline TOML string:
-
-```toml
-[report]
-title = "Example host - SnapBeforeWatchTower"
-comment = """
-First line
-
-Second line
-"""
-```
-
-Replace the existing `[report]` table when trying an example; TOML does not allow duplicate tables. TOML removes the newline immediately after the opening triple quotes. Remaining line breaks are retained in email and JSON. A literal TOML string such as `comment = 'First\nSecond'` keeps the backslash and `n` characters, as TOML specifies. The application does not perform a second unescape pass. MQTT represents newline characters as JSON escapes on the wire; consumers recover real line breaks when decoding JSON.
 
 ## `[mail]` — optional
 

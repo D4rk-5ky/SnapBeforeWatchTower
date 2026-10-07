@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 from mqtt_report import RunReporter, validate_config as validate_mqtt_config, worker as mqtt_worker
 
-__version__ = "0.0.14"
+__version__ = "0.0.16"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -35,7 +35,7 @@ class CustomLogger(logging.Logger):
         console_handler.setFormatter(formatter)
         self.addHandler(console_handler)
         
-def setup_logger(log_folder: str, log_date: str) -> Tuple[logging.Logger, logging.Logger, str]:
+def setup_logger(log_folder: str, log_date: str, prefix: str = "SnapBeforeWatchTower") -> Tuple[logging.Logger, logging.Logger, str]:
     """
     Creates two loggers:
       - main logger: INFO to console, DEBUG to .log
@@ -45,8 +45,8 @@ def setup_logger(log_folder: str, log_date: str) -> Tuple[logging.Logger, loggin
     """
     os.makedirs(log_folder, exist_ok=True)
 
-    log_filepath = os.path.join(log_folder, f"SnapBeforeWatchTower-Date-{log_date}.log")
-    err_filepath = os.path.join(log_folder, f"SnapBeforeWatchTower-Date-{log_date}.err")
+    log_filepath = os.path.join(log_folder, f"{prefix}-Date-{log_date}.log")
+    err_filepath = os.path.join(log_folder, f"{prefix}-Date-{log_date}.err")
 
     fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
@@ -114,50 +114,20 @@ def choose_log_folder(preferred_root_folder: str, fallback_folder: str | None = 
     return fallback_folder
 
 def runtime_base_dir() -> str:
-    """Return the persistent application directory for source and frozen execution.
-
-    A frozen executable built into a conventional project ``dist/`` directory uses
-    the project directory as its persistent base so runtime logs do not pollute
-    ``dist/``. A frozen executable deployed elsewhere keeps using its executable
-    directory, while source execution keeps using the source directory.
-    """
+    """Return the actual source/executable directory for persistent logs."""
     if getattr(sys, "frozen", False):
-        executable_dir = Path(sys.executable).resolve().parent
-        if executable_dir.name == "dist":
-            return str(executable_dir.parent)
-        return str(executable_dir)
-    return os.path.dirname(os.path.abspath(__file__))
+        return str(Path(sys.executable).resolve().parent)
+    return str(Path(__file__).resolve().parent)
 
 
 def pick_log_folder(script_log_folder: str, tmp_name: str = "SnapBeforeWatchTower") -> str:
+    """Create the application-local log folder; propagate failure without fallback.
+
+    tmp_name is retained for compatibility with existing callers but is unused.
     """
-    Policy:
-      - If NOT root: always use /tmp/<tmp_name>
-      - If root: try <script>/logs; if not writable, fall back to /tmp/<tmp_name>
-    """
-    tmp_folder = os.path.join(tempfile.gettempdir(), tmp_name)
+    os.makedirs(script_log_folder, exist_ok=True)
+    return script_log_folder
 
-    def _ensure_writable(path: str) -> bool:
-        try:
-            os.makedirs(path, exist_ok=True)
-            test_path = os.path.join(path, ".write_test")
-            with open(test_path, "w", encoding="utf-8") as f:
-                f.write("ok")
-            os.remove(test_path)
-            return True
-        except Exception:
-            return False
-
-    if os.geteuid() != 0:
-        os.makedirs(tmp_folder, exist_ok=True)
-        return tmp_folder
-
-    # root path
-    if _ensure_writable(script_log_folder):
-        return script_log_folder
-
-    os.makedirs(tmp_folder, exist_ok=True)
-    return tmp_folder
 
 class CommandError(RuntimeError):
     def __init__(self, cmd, returncode, stdout, stderr):
@@ -293,7 +263,7 @@ def run_cmd(cmd, logger=None, error_logger=None, check=True, dry_run=False):
     return proc
 
 def get_newest_files(log_dir, prefix):
-    files = glob.glob(os.path.join(log_dir, f"{prefix}*"))
+    files = glob.glob(os.path.join(log_dir, f"{glob.escape(prefix)}-Date-*"))
     # Use modification time (mtime) which is more portable than creation time
     files.sort(key=os.path.getmtime, reverse=True)
     
@@ -343,6 +313,8 @@ def MailTo(
     subject="SnapBeforeWatchTower report - logs attached",
     intro="",
     prefix="SnapBeforeWatchTower",
+    title="",
+    comment="",
 ):
     print_separator(logger)
     logger.info("Preparing email report...")
@@ -351,6 +323,11 @@ def MailTo(
 
     attachment_files = []
     body = ""
+
+    if title:
+        body += title + "\n\n"
+    if comment:
+        body += comment + "\n\n"
 
     if intro:
         body += intro.strip() + "\n\n"
@@ -538,7 +515,8 @@ def delete_old_files(
     log_folder: str,
     older_than: datetime.timedelta,
     retain_count: int,
-    dry_run=False
+    dry_run=False,
+    prefix: str = "SnapBeforeWatchTower",
 ) -> None:
     """
     Deletes old log groups (.log/.err/.digest) based on embedded timestamp, while keeping
@@ -549,10 +527,10 @@ def delete_old_files(
     os.makedirs(log_folder, exist_ok=True)
 
     # Matches:
-    #   SnapBeforeWatchTower-Date-YYYY-MM-DD_HH_MM_SS.log|err|digest
+    #   PREFIX-Date-YYYY-MM-DD_HH_MM_SS.log|err|digest
     # and some minor variations you already support
     date_pattern = re.compile(
-        r"SnapBeforeWatchTower[-_][Dd]ate[-_]?(?P<ts>\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})\.(?P<ext>log|err|digest)$"
+        r"^" + re.escape(prefix) + r"[-_][Dd]ate[-_]?(?P<ts>\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_\d{2})\.(?P<ext>log|err|digest)$"
     )
 
     files_by_ts: dict[datetime.datetime, List[str]] = {}
@@ -614,7 +592,8 @@ def save_docker_image_digests(
     error_logger: logging.Logger,
     log_folder: str,
     log_date: str,
-    dry_run=False
+    dry_run=False,
+    prefix: str = "SnapBeforeWatchTower",
 ) -> Optional[str]:
     """
     Save `docker images --digests` output to a .digest file that shares the same
@@ -629,7 +608,7 @@ def save_docker_image_digests(
 
     os.makedirs(log_folder, exist_ok=True)
 
-    filename = f"SnapBeforeWatchTower-Date-{log_date}.digest"
+    filename = f"{prefix}-Date-{log_date}.digest"
     filepath = os.path.join(log_folder, filename)
 
     # Run docker and capture output
@@ -665,6 +644,38 @@ def save_docker_image_digests(
         return None
 
 
+def default_log_prefix() -> str:
+    """Use the real source/executable basename, excluding its final extension."""
+    return Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().stem
+
+
+def load_report_settings(document):
+    """Validate optional logging/report tables; preserve TOML-decoded comment newlines."""
+    values = {}
+    for section, keys in [('logging', {'prefix'}), ('report', {'title', 'comment'})]:
+        table = document.get(section, {})
+        if not isinstance(table, dict):
+            raise ValueError(f'[{section}] must be a TOML table')
+        unknown = set(table) - keys
+        if unknown:
+            raise ValueError(f'[{section}] contains unsupported key(s): {", ".join(sorted(unknown))}')
+        for key in keys:
+            value = table.get(key, '')
+            if not isinstance(value, str) or '\0' in value:
+                raise ValueError(f'[{section}].{key} must be a string without NUL')
+            if key != 'comment':
+                if '\n' in value or '\r' in value:
+                    raise ValueError(f'[{section}].{key} must be a single-line string')
+                value = value.strip()
+            values[key] = value
+    prefix = values['prefix'] or default_log_prefix()
+    # Keep the prefix within one filename and out of glob/regex syntax. This
+    # prevents generated files and email lookup from escaping their log folder.
+    if values['prefix'] and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', prefix):
+        raise ValueError('[logging].prefix must start with a letter/digit and contain only letters, digits, dots, underscores or hyphens')
+    return prefix, values['title'], values['comment']
+
+
 def load_app_config(path):
     """Load and validate the single TOML configuration file used by the application."""
     config_path = Path(path).expanduser().resolve()
@@ -673,11 +684,13 @@ def load_app_config(path):
     if not isinstance(document, dict):
         raise ValueError('configuration root must be a TOML table')
 
-    supported_sections = {'application', 'mail', 'mqtt'}
+    supported_sections = {'application', 'mail', 'mqtt', 'logging', 'report'}
     unknown_sections = set(document) - supported_sections
     if unknown_sections:
         names = ', '.join(sorted(unknown_sections))
         raise ValueError(f'unsupported configuration section(s): {names}')
+
+    log_prefix, report_title, report_comment = load_report_settings(document)
 
     application = document.get('application')
     if not isinstance(application, dict):
@@ -761,6 +774,8 @@ def load_app_config(path):
         raise ValueError('[mqtt].enabled must be true or false')
     mqtt_values = dict(mqtt)
     mqtt_values.pop('enabled', None)
+    if report_title:
+        mqtt_values['title'] = report_title
     mqtt_config = validate_mqtt_config(
         mqtt_values,
         base_dir=config_path.parent,
@@ -779,6 +794,9 @@ def load_app_config(path):
         continue_on_missing_dataset=continue_on_missing_dataset,
         continue_on_other_failures=continue_on_other_failures,
         config_path=str(config_path),
+        log_prefix=log_prefix,
+        report_title=report_title,
+        report_comment=report_comment,
     )
     return args, mqtt_config
 
@@ -798,21 +816,36 @@ def main():
         return
 
     parser = argparse.ArgumentParser(
-        usage='%(prog)s -c CONFIG',
-        description='Run SnapBeforeWatchTower using one TOML configuration file.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description='Create ZFS snapshots or apply retention using one TOML configuration file.',
         epilog=(
-            'Operational settings such as create/delete mode, datasets, retention, mail, MQTT, '
-            'and dry-run are configured in the TOML file rather than with separate CLI flags.'
+            'Examples:\n'
+            '  python3 SnapBeforeWatchTower.py --help\n'
+            '  python3 SnapBeforeWatchTower.py --version\n'
+            '  sudo python3 SnapBeforeWatchTower.py -c config.toml\n'
+            '  sudo ./dist/SnapBeforeWatchTower -c config.toml\n\n'
+            'Operational settings belong in TOML, not separate CLI flags:\n'
+            '  [application] command="create" snapshots each dataset, then applies retention;\n'
+            '                command="delete" only applies snapshot and log retention.\n'
+            '  dataset_file, older_than, retain_count, dry_run, and continuation policies\n'
+            '  are application settings. [mail] and [mqtt] configure notifications.\n'
+            '  [logging].prefix names log files. [report].title/comment customize reports;\n'
+            '  comment accepts TOML \\n escapes and multiline strings.\n\n'
+            'Runtime requires Linux and root, including dry-run. Dry-run still lists ZFS\n'
+            'snapshots, writes logs, and can send enabled mail/MQTT notifications.\n'
+            'Logs always use logs/ beside the actual script/executable; no fallback.\n'
+            'File paths inside TOML are relative to that configuration file.\n'
+            'See config-example.toml for every setting and README.md for full usage.'
         ),
     )
-    parser.add_argument('-c', metavar='CONFIG', required=True, help='Path to the TOML configuration file used for all operational settings')
+    parser.add_argument('-c', metavar='CONFIG', required=True, help='Required for operation: load all settings from this TOML file; relative CONFIG uses the current working directory')
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}', help='Show the application version and exit')
     cli = parser.parse_args()
     try:
         args, mqtt_config = load_app_config(cli.c)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         parser.error(f'Cannot load configuration: {exc}')
-    with RunReporter(mqtt_config, args.command, __version__, dry_run=args.dry_run) as reporter:
+    with RunReporter(mqtt_config, args.command, __version__, dry_run=args.dry_run, comment=args.report_comment) as reporter:
         run(args, reporter)
 
 
@@ -821,19 +854,19 @@ def run(args, reporter):
     global err_filepath
     
     dry_run = args.dry_run
+    log_prefix = getattr(args, "log_prefix", default_log_prefix())
+    report_title = getattr(args, "report_title", "") or default_log_prefix()
+    report_comment = getattr(args, "report_comment", "")
     report_prefix = "SnapBeforeWatchTower DRY-RUN" if dry_run else "SnapBeforeWatchTower"
 
     log_date = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
-    # Pick log folder: root-only folder if root, otherwise /tmp fallback
-    # In a PyInstaller one-file build, __file__ points into the temporary bundle
-    # extraction directory. runtime_base_dir() keeps build output clean by using
-    # the project root when the frozen executable lives in dist/, while preserving
-    # the existing source-mode location and sensible deployed-binary behavior.
+    # The user-selected fixed policy stores all generated logs beside the real
+    # source/executable, including binaries deployed in dist/. No temp fallback.
     preferred_log_folder = os.path.join(runtime_base_dir(), "logs")
     log_folder = pick_log_folder(preferred_log_folder)
 
     # Create separate loggers for main logs and error logs
-    logger, error_logger, err_filepath = setup_logger(log_folder, log_date)
+    logger, error_logger, err_filepath = setup_logger(log_folder, log_date, prefix=log_prefix)
     reporter.attach(error_logger)
 
     mqtt_config = getattr(reporter, 'config', None)
@@ -852,7 +885,7 @@ def run(args, reporter):
     if os.geteuid() != 0:
         msg = (
             ("SnapBeforeWatchTower dry-run must be run as root (sudo). " if dry_run else "This script must be run as root (sudo). ")
-            + f"Logs were written to: {log_folder} (fallback, because not root)."
+            + f"Logs were written to: {log_folder}."
         )
         error_logger.error(msg)
 
@@ -863,6 +896,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
+                prefix=log_prefix, title=report_title, comment=report_comment,
                     subject=f"{report_prefix} FAILED - not run as root",
                     intro=msg,
                 )
@@ -883,7 +917,7 @@ def run(args, reporter):
             datasets = [ln.strip() for ln in file.read().splitlines() if ln.strip()]
 
         if args.command == 'create':
-            save_docker_image_digests(logger, error_logger, log_folder, log_date, dry_run=dry_run)
+            save_docker_image_digests(logger, error_logger, log_folder, log_date, dry_run=dry_run, prefix=log_prefix)
 
             print_separator(logger)
             logger.info("Starting snapshot creation..." + (" [DRY-RUN]" if dry_run else ""))
@@ -921,7 +955,7 @@ def run(args, reporter):
             else:
                 logger.info("Snapshot creation completed.")
 
-            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run)
+            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run, prefix=log_prefix)
 
         elif args.command == 'delete':
             print_separator(logger)
@@ -959,7 +993,7 @@ def run(args, reporter):
 
             print_separator(logger)
 
-            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run)
+            delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run, prefix=log_prefix)
 
         if other_dataset_failures:
             raise DatasetCommandFailuresError(other_dataset_failures, missing_datasets)
@@ -977,6 +1011,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
+                prefix=log_prefix, title=report_title, comment=report_comment,
                     subject=f"{report_prefix} FAILED - dataset command failure",
                     intro=(
                         ("SnapBeforeWatchTower dry-run continued past configured per-dataset ZFS command failures, but the run " if dry_run
@@ -999,6 +1034,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
+                prefix=log_prefix, title=report_title, comment=report_comment,
                     subject=f"{report_prefix} FAILED - missing dataset",
                     intro=(
                         (
@@ -1028,6 +1064,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
+                prefix=log_prefix, title=report_title, comment=report_comment,
                     subject=f"{report_prefix} FAILED - logs attached",
                     intro=("SnapBeforeWatchTower dry-run failed. See attached logs." if dry_run else "SnapBeforeWatchTower failed. See attached logs."),
                 )
@@ -1048,6 +1085,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
+                prefix=log_prefix, title=report_title, comment=report_comment,
                     subject=f"{report_prefix} SUCCESS - logs attached",
                     intro=("SnapBeforeWatchTower dry-run completed successfully. Logs attached." if dry_run else "SnapBeforeWatchTower completed successfully. Logs attached."),
                 )

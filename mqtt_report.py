@@ -110,7 +110,7 @@ class ErrorCapture(logging.Handler):
             self.text = (self.text + '\n' + message).strip()[-4096:]
 
 
-def build_payload(config, command, version, exc, errors, run_id, dry_run=False):
+def build_payload(config, command, version, exc, errors, run_id, dry_run=False, comment=""):
     """Describe the actual process outcome, retaining nonfatal errors as warnings."""
     code = 0
     if isinstance(exc, SystemExit):
@@ -134,6 +134,7 @@ def build_payload(config, command, version, exc, errors, run_id, dry_run=False):
         'title': config['title'],
         'name': config['title'],
         'job': config['title'],
+        'comment': comment,
         'exit_code': code,
         'warning': bool(errors) and not failure,
         'error': error[-4096:],
@@ -171,11 +172,12 @@ def publish_report(config, payload):
 class RunReporter:
     """Publish one final outcome without changing existing operations or exit behavior."""
 
-    def __init__(self, config, command, version, dry_run=False):
+    def __init__(self, config, command, version, dry_run=False, comment=""):
         self.config = config
         self.command = command
         self.version = version
         self.dry_run = dry_run
+        self.comment = comment
         self.run_id = str(uuid.uuid4())
         self.errors = ErrorCapture()
         self.error_logger = None
@@ -195,7 +197,7 @@ class RunReporter:
         logger = logging.getLogger('SnapBeforeWatchTower')
         try:
             payload = build_payload(
-                self.config, self.command, self.version, exc, self.errors.text, self.run_id, dry_run=self.dry_run
+                self.config, self.command, self.version, exc, self.errors.text, self.run_id, dry_run=self.dry_run, comment=self.comment
             )
             if payload['status'] == 'success' and not self.config['on_success']:
                 logger.info('%sMQTT success report suppressed because on_success=false', '[DRY-RUN] ' if self.dry_run else '')

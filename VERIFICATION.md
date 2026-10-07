@@ -1,130 +1,53 @@
-# Release verification — 0.0.14
+# Release verification — 0.0.16
 
-## Summary
+Verified on 2026-10-07 in the Windows workspace. This is a source release; the earlier 0.0.15 project, ZIP, checksum and comparison report remain unchanged. A baseline of the 0.0.15 ZIP was recorded before edits.
 
-Version 0.0.14 keeps the 0.0.13 delivery contract unchanged: after a successful PyInstaller build, `dist/` may contain **only** `README.md` and the executable `SnapBeforeWatchTower`. The change in this release is that all generated build state is consolidated under one separate, gitignored `.build-pyinstaller/` workspace instead of being scattered across project-level `.venv-build/` and `build/` directories.
+## Changes
+
+This release adds three optional TOML settings: [logging].prefix and [report].title/comment. Prefixes are used for .log/.err/.digest names, retention and mail attachments. The report title is an email body heading and overrides the MQTT title when nonempty; comment preserves decoded TOML newlines in email and the JSON payload. The Home Assistant example displays the optional comment.
+
+The user explicitly selected fixed logs/ storage beside the actual script/executable. There is no temporary fallback, even for an executable in dist/. An unwritable log directory stops the run before ZFS/Docker work. Root enforcement and all snapshot/continuation/dry-run safety rules remain intact.
+
+## Checks performed
 
 | Check | Result |
 | --- | --- |
-| Version increment | PASS — 0.0.13 -> 0.0.14 |
-| Offline unit/regression suite | PASS — 50/50 tests |
-| Source CLI help | PASS — `--help` exits 0 and documents `-c`, `-h/--help`, and `--version` |
-| Source CLI version | PASS — `--version` reports `SnapBeforeWatchTower.py 0.0.14` |
-| Python compile check | PASS — all 4 project `.py` files compile in memory |
-| Build-script shell syntax | PASS — `bash -n build-pyinstaller.sh` |
-| Example TOML parse | PASS — standard-library `tomllib` loads `[application]`, `[mail]`, and `[mqtt]` |
-| Configuration coverage | PASS — all 24 example TOML settings are present in `config.example.md` |
-| Code-map coverage | PASS — all 29 module-level symbols in `SnapBeforeWatchTower.py` and all 7 in `mqtt_report.py` are named in `commented_code_map.md` |
-| Disclaimer consistency | PASS — README and SAFETY carry the same requested disclaimer block |
-| Build workspace isolation | PASS — controlled build places venv/pip cache/PyInstaller work/config under `.build-pyinstaller/` only |
-| Legacy build locations | PASS — controlled build leaves project-level `build/` and `.venv-build/` absent |
-| Git ignore behavior | PASS — `.build-pyinstaller/`, legacy `build/`, legacy `.venv-build/`, and generated `dist/SnapBeforeWatchTower` are ignored; `dist/README.md` remains trackable |
-| Clean pre-build dist policy | PASS — build script removes every `dist/` entry except `README.md` before invoking PyInstaller |
-| Final dist policy | PASS — build script accepts exactly `README.md` + `SnapBeforeWatchTower` and rejects all other normal/hidden entries |
-| Controlled clean-build harness | PASS — stub build ended with exactly `README.md` and `SnapBeforeWatchTower` |
-| Controlled extra-artifact rejection | PASS — stub build adding `extra.txt` exited nonzero |
-| Runtime dist cleanliness | PASS — existing frozen-runtime regression keeps project logs outside `dist/` |
-| Manifest vs 0.0.13 | PASS — same 19 project file paths; no path added or removed |
-| PyInstaller/Paho availability in this sandbox | NOT AVAILABLE — neither package is installed locally and PyPI cannot be reached by pip, so no real ELF build is claimed |
+| Offline suite | PASS — 62/62 tests; external operations and notification transports are mocked |
+| Newline handling | PASS — escaped-newline, multiline basic/literal TOML strings, blank lines, trailing newline, literal backslashes, exact email body, MQTT JSON round-trip and mocked Paho worker publication |
+| Report propagation | PASS — shared title precedence and empty legacy-title fallback; main success, continued dataset failure and non-root failure carry the title/comment into mail/MQTT |
+| Prefix behavior | PASS — real disposable .log/.err files, mocked-Docker .digest creation, dry-run/count/age protection, exact-prefix retention and overlapping-prefix attachment exclusion |
+| Fixed log storage | PASS — source and mocked frozen executable paths (including dist), non-root folder selection and mocked unwritable-folder refusal before external work |
+| Validation | PASS — wrong tables/types/keys, NUL, unsafe path/glob prefixes and multiline titles are rejected before operation/report work |
+| CLI | PASS — -h/--help and --version; missing config, invalid/retired flags and missing files fail at parser boundary; version is 0.0.16 |
+| Compilation | PASS — all four .py files plus the PyInstaller .spec compile in memory |
+| Build script syntax | PASS — GNU Bash 5.2.37 parses build-pyinstaller.sh with -n, executing no commands |
+| Configuration/docs | PASS — all 27 supported settings appear in TOML and usage references; safe example loads with dry-run and notifications disabled |
+| Code map | PASS — all 121 function/class definition occurrences, including methods, nested helper and tests, are named and explained; commands and build controls remain documented |
+| Runtime preservation | PASS — all original module-level functions/classes retained; unmodified snapshot, command, duration, error/continuation helpers compare identically by AST; MQTT worker/publish/TLS/auth transport is unchanged by AST |
+| Required originals | PASS — all 20 paths from 0.0.15 retained, including the existing manifest; seven files remain byte-identical |
+| Disclaimer/version history | PASS — exact disclaimer after README title; SAFETY.md unchanged; complete earlier version entries retained; 0.0.15 -> 0.0.16 |
+| Build inputs | PASS — build script, spec, dependency files and .gitignore are byte-identical |
+| Home Assistant | PASS — exact source comparison verifies only optional comment extraction/display was added; topic/trigger/status branching remain unchanged |
 
-## Required final `dist/` layout
+## Packaging
 
-After a successful real build:
+The project retains all 20 prior-release files. manifest.sha256 is regenerated and covers every other file, excluding itself. A ZIP checksum and manifest-comparison JSON accompany the source ZIP. The comparison records source/release hashes, path preservation, original ZIP metadata, ZIP CRC/member/byte verification, extracted-file equality, extracted CLI/compile/test results and forbidden-artifact checks. It also verifies that all 19 originally uploaded project paths remain present.
 
-```text
-dist/
-├── README.md
-└── SnapBeforeWatchTower
+No cache, bytecode, logs, credentials, generated executable, build workspace or temporary verification helper is included. Static build inputs and dist/README.md remain required project files.
+
+From the extracted project directory on Linux:
+
+```bash
+sha256sum -c manifest.sha256
+python3 -B -m unittest discover -s tests -v
 ```
 
-No dependency folder, build directory, log directory, hidden file, cache, second executable, or other artifact is permitted in `dist/`.
+## Operational boundary and untested integration
 
-## Generated build workspace
+No real Linux/ZFS, Docker daemon, mail transport, MQTT broker/TLS/authentication, Home Assistant automation or Pushover delivery was exercised. No Linux PyInstaller executable was built. Paho/PyInstaller and a YAML parser are unavailable in the verification interpreter; the Home Assistant example was checked by precise source comparison, not loaded into Home Assistant.
 
-All generated build state is intentionally kept under this gitignored directory:
+Fixed-directory selection and refusal to fall back were tested locally; Linux ownership/permission and real frozen execution still need a disposable deployment test. If log setup fails, mail cannot attach logs and is not attempted from the operation flow. An enabled MQTT reporter can still attempt the final exception report, subject to its normal transport limits; actual delivery was not tested.
 
-```text
-.build-pyinstaller/
-├── config/
-├── pip-cache/
-├── venv/
-└── work/
-```
+The unchanged build script cleans every generated dist/ entry before rebuilding, including dist/logs/ if jobs have been run there. Preserve needed logs before rebuilding or deploy the executable outside the build directory. Its two-file layout applies immediately after a successful build; runtime creates logs/ beside the executable as requested.
 
-`build-pyinstaller.sh` removes `.build-pyinstaller/` before each build and recreates it from scratch. It also removes the legacy project-level `build/` and `.venv-build/` directories used by older releases. The PyInstaller call receives an explicit `--workpath`, explicit `--distpath`, and `PYINSTALLER_CONFIG_DIR`, while pip receives a build-local cache path.
-
-The static build inputs remain tracked project files because they are required to reproduce the build:
-
-- `build-pyinstaller.sh`
-- `SnapBeforeWatchTower.spec`
-- `requirements-build.txt`
-
-These are not generated build artifacts and are therefore not placed in or ignored with `.build-pyinstaller/`.
-
-## Controlled build-layout verification
-
-A local stub harness was used because real PyInstaller/Paho are not installed in this sandbox.
-
-The success case produced exactly:
-
-```text
-dist/README.md
-dist/SnapBeforeWatchTower
-```
-
-and generated build state only under:
-
-```text
-.build-pyinstaller/config/
-.build-pyinstaller/pip-cache/
-.build-pyinstaller/venv/
-.build-pyinstaller/work/
-```
-
-The project-level legacy `build/` and `.venv-build/` directories were absent after the build.
-
-The failure case deliberately produced:
-
-```text
-dist/README.md
-dist/SnapBeforeWatchTower
-dist/extra.txt
-```
-
-The build script exited with code 1 and reported that `dist/` must contain exactly `SnapBeforeWatchTower` and `README.md`.
-
-## Runtime log behavior
-
-The existing frozen-runtime log placement remains unchanged:
-
-- source execution: project/source directory -> project `logs/`;
-- frozen executable at `.../dist/SnapBeforeWatchTower`: parent project directory -> project-level `logs/`, not `dist/logs/`;
-- frozen executable deployed outside a directory named `dist`: executable directory -> `logs/` beside that deployment;
-- non-root fallback remains `/tmp/SnapBeforeWatchTower`.
-
-This prevents normal execution from adding a third `dist/` entry.
-
-## Safety/behavior scope
-
-Version 0.0.14 does **not** change:
-
-- snapshot naming or retention calculations;
-- `zfs snapshot`, `zfs list`, or `zfs destroy` semantics;
-- `continue_on_missing_dataset` or `continue_on_other_failures` behavior;
-- dry-run mutation suppression;
-- Docker digest capture behavior;
-- root enforcement;
-- TOML setting names/defaults;
-- mail success/failure reporting policy;
-- MQTT success/failure reporting policy, payloads, QoS, retain, TLS, authentication, or timeout;
-- Home Assistant automation behavior.
-
-## Manifest comparison against 0.0.13
-
-The supplied 0.0.13 archive contained 19 project files. Version 0.0.14 preserves the same 19 paths with no additions or removals. Changes are limited to the versioned application/test fixtures and the build/documentation files required for build-workspace isolation.
-
-The clean source release excludes `.build-pyinstaller/`, legacy `.venv-build/`, legacy `build/`, generated `dist/SnapBeforeWatchTower`, Python bytecode, caches, backups, and temporary files. The tracked `dist/README.md` remains included.
-
-## What was not live-tested
-
-No real ZFS snapshot was created or destroyed. No live Docker digest capture, local mail delivery, MQTT broker/TLS/authentication exchange, Home Assistant automation execution, or Pushover delivery was performed. A real PyInstaller ELF executable was not built in this sandbox because PyInstaller/Paho are not installed and pip cannot currently reach PyPI; the controlled build-layout harness verifies the shell packaging contract instead.
+Dry-run still lists ZFS, writes logs, removes an empty current error file at final cleanup and can send enabled notifications. It suppresses snapshot creation/destruction and old-log deletion, and skips Docker. Changing logging.prefix leaves older-prefix log files in place. It does not change snapshot naming or snapshot retention. Report settings do not enable either notification channel.

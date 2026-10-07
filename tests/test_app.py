@@ -38,7 +38,8 @@ def temporary_directory():
 
 
 def write_config(folder, *, command='create', dataset_file='datasets.txt', older_than='7d', retain_count=10,
-                 dry_run=False, continue_on_missing_dataset=True, continue_on_other_failures=True, mail='', mqtt=''):
+                 dry_run=False, continue_on_missing_dataset=True, continue_on_other_failures=True,
+                 mail='', mqtt='', logging_settings='', report=''):
     """Write a minimal TOML config used by parser/integration tests."""
     path = Path(folder) / 'config.toml'
     path.write_text(
@@ -51,7 +52,9 @@ def write_config(folder, *, command='create', dataset_file='datasets.txt', older
         f'continue_on_missing_dataset = {str(continue_on_missing_dataset).lower()}\n'
         f'continue_on_other_failures = {str(continue_on_other_failures).lower()}\n'
         f'{mail}'
-        f'{mqtt}',
+        f'{mqtt}'
+        f'{logging_settings}'
+        f'{report}',
         encoding='utf-8',
     )
     return path
@@ -429,17 +432,17 @@ class BehaviorTests(unittest.TestCase):
         run.assert_not_called()
         popen.assert_not_called()
 
-    def test_runtime_base_dir_keeps_project_dist_clean_when_frozen(self):
+    def test_runtime_base_dir_uses_actual_dist_directory_when_frozen(self):
         source_dir = app.runtime_base_dir()
         self.assertEqual(source_dir, str(ROOT))
         with patch.object(app.sys, 'frozen', True, create=True), \
              patch.object(app.sys, 'executable', '/opt/sbwt/dist/SnapBeforeWatchTower'):
-            self.assertEqual(app.runtime_base_dir(), '/opt/sbwt')
+            self.assertEqual(app.runtime_base_dir(), str(Path('/opt/sbwt/dist').resolve()))
 
     def test_runtime_base_dir_uses_executable_directory_when_frozen_outside_dist(self):
         with patch.object(app.sys, 'frozen', True, create=True), \
              patch.object(app.sys, 'executable', '/opt/sbwt/bin/SnapBeforeWatchTower'):
-            self.assertEqual(app.runtime_base_dir(), '/opt/sbwt/bin')
+            self.assertEqual(app.runtime_base_dir(), str(Path('/opt/sbwt/bin').resolve()))
 
     def test_frozen_private_mqtt_worker_entrypoint_bypasses_public_cli(self):
         with patch.object(app.sys, 'frozen', True, create=True), \
@@ -585,6 +588,180 @@ class BehaviorTests(unittest.TestCase):
             self.assertEqual(app.send_mail('Report', 'Body', 'test@example.com', ['run.log']), (0, ''))
         self.assertEqual(popen.call_args.args[0], ['mail', '-s', 'Report', '--attach', 'run.log', 'test@example.com'])
 
+    def test_optional_log_report_defaults_preserve_existing_configs(self):
+        with temporary_directory() as folder:
+            args, mqtt_config = app.load_app_config(write_config(folder))
+        self.assertEqual(args.log_prefix, 'SnapBeforeWatchTower')
+        self.assertEqual(args.report_title, '')
+        self.assertEqual(args.report_comment, '')
+        self.assertIsNone(mqtt_config)
+
+    def test_report_title_precedence_and_comment_newlines_from_toml(self):
+        cases = [
+            ('"First\\nSecond"', 'First\nSecond'),
+            ('"""\nFirst\n\nSecond\n"""', 'First\n\nSecond\n'),
+            ("'''\nFirst\nSecond\n'''", 'First\nSecond\n'),
+            ("'Literal \\n remains literal'", 'Literal \\n remains literal'),
+        ]
+        with temporary_directory() as folder:
+            for encoded, expected in cases:
+                with self.subTest(encoded=encoded):
+                    config = write_config(
+                        folder, logging_settings='\n[logging]\nprefix="Custom.Prefix"\n',
+                        report='\n[report]\ntitle="Shared title"\ncomment=' + encoded + '\n',
+                        mqtt='\n[mqtt]\nenabled=true\nhost="broker"\ntopic="test/status"\ntitle="Legacy title"\n',
+                    )
+                    with patch.object(mqtt.importlib, 'import_module'):
+                        args, config_values = app.load_app_config(config)
+                    self.assertEqual(args.log_prefix, 'Custom.Prefix')
+                    self.assertEqual(args.report_title, 'Shared title')
+                    self.assertEqual(args.report_comment, expected)
+                    self.assertEqual(config_values['title'], 'Shared title')
+            config = write_config(folder, report='\n[report]\ntitle=""\n',
+                                  mqtt='\n[mqtt]\nenabled=true\nhost="broker"\ntopic="test/status"\ntitle="Legacy title"\n')
+            with patch.object(mqtt.importlib, 'import_module'):
+                _, config_values = app.load_app_config(config)
+            self.assertEqual(config_values['title'], 'Legacy title')
+
+    def test_invalid_log_report_values_fail_before_operations(self):
+        bad = [
+            {'logging': []}, {'report': []}, {'logging': {'extra': 'x'}},
+            {'report': {'extra': 'x'}}, {'logging': {'prefix': 1}},
+            {'logging': {'prefix': '../escape'}}, {'logging': {'prefix': '/absolute'}},
+            {'logging': {'prefix': 'back\\slash'}}, {'logging': {'prefix': 'glob*'}},
+            {'logging': {'prefix': 'line\nbreak'}}, {'logging': {'prefix': 'nul\0'}},
+            {'report': {'title': 1}}, {'report': {'title': 'header\r\ninjection'}},
+            {'report': {'comment': 1}}, {'report': {'comment': 'nul\0'}},
+        ]
+        for document in bad:
+            with self.subTest(document=document), self.assertRaises(ValueError):
+                app.load_report_settings(document)
+        with temporary_directory() as folder:
+            config = write_config(folder, logging_settings='\n[logging]\nprefix="../escape"\n')
+            with patch.object(sys, 'argv', ['app', '-c', str(config)]), \
+                 patch.object(app, 'run') as run, patch.object(mqtt, 'publish_report') as publish:
+                with self.assertRaises(SystemExit) as failure:
+                    app.main()
+                self.assertEqual(failure.exception.code, 2)
+            run.assert_not_called()
+            publish.assert_not_called()
+
+    def test_custom_prefix_log_files_and_retention_keep_other_prefixes(self):
+        with temporary_directory() as folder:
+            log, err, err_path = app.setup_logger(folder, '2000-01-01_00_00_00', prefix='Custom.Prefix')
+            try:
+                log.info('test log')
+                err.error('test error')
+            finally:
+                for logger in [log, err]:
+                    for handler in logger.handlers[:]:
+                        handler.close()
+                        logger.removeHandler(handler)
+            self.assertEqual(Path(err_path).name, 'Custom.Prefix-Date-2000-01-01_00_00_00.err')
+            Path(folder, 'Custom.Prefix-Date-2000-01-01_00_00_00.digest').write_text('digest')
+            other = Path(folder, 'Other-Custom.Prefix-Date-2000-01-01_00_00_00.log')
+            other.write_text('keep')
+            app.delete_old_files(self.log, self.err, folder, dt.timedelta(days=7), 0,
+                                 dry_run=True, prefix='Custom.Prefix')
+            self.assertEqual(len(list(Path(folder).iterdir())), 4)
+            app.delete_old_files(self.log, self.err, folder, dt.timedelta(days=7), 1, prefix='Custom.Prefix')
+            self.assertEqual(len(list(Path(folder).iterdir())), 4)
+            app.delete_old_files(self.log, self.err, folder, dt.timedelta(days=7), 0, prefix='Custom.Prefix')
+            self.assertEqual(list(Path(folder).iterdir()), [other])
+
+    def test_custom_prefix_digest_filename(self):
+        with temporary_directory() as folder:
+            with patch.object(app.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, 'digest data', '')):
+                path = app.save_docker_image_digests(self.log, self.err, folder, '2000-01-01_00_00_00', prefix='Custom')
+            self.assertEqual(Path(path).name, 'Custom-Date-2000-01-01_00_00_00.digest')
+            self.assertEqual(Path(path).read_text(encoding='utf-8'), 'digest data')
+
+    def test_email_title_and_multiline_comment_precede_current_report(self):
+        with temporary_directory() as folder:
+            logfile = Path(folder, 'Custom-Date-2000-01-01_00_00_00.log')
+            logfile.write_text('current log', encoding='utf-8')
+            Path(folder, 'CustomOther-Date-2099-01-01_00_00_00.log').write_text('other prefix', encoding='utf-8')
+            comment = 'First line\n\nSecond line\n'
+            with patch.object(app, 'send_mail', return_value=(0, '')) as send:
+                app.MailTo(self.log, self.err, 'test@example.com', folder, prefix='Custom',
+                           title='Shared title', comment=comment, intro='Outcome')
+            self.assertTrue(send.call_args.args[1].startswith('Shared title\n\n' + comment + '\n\nOutcome'))
+            self.assertEqual(send.call_args.args[3], [str(logfile)])
+
+    def test_main_propagates_log_prefix_and_shared_report_in_success_and_failure(self):
+        with temporary_directory() as folder:
+            Path(folder, 'datasets.txt').write_text('tank/data\n', encoding='utf-8')
+            config = write_config(
+                folder, dry_run=True,
+                logging_settings='\n[logging]\nprefix="Custom"\n',
+                report='\n[report]\ntitle="Shared title"\ncomment="First\\nSecond"\n',
+                mail='\n[mail]\nenabled=true\nrecipient="test@example.com"\non_success=true\n',
+                mqtt='\n[mqtt]\nenabled=true\nhost="broker"\ntopic="test/status"\non_success=true\n',
+            )
+            for scenario in ['success', 'dataset-failure', 'nonroot']:
+                with self.subTest(scenario=scenario), \
+                     patch.object(sys, 'argv', ['app', '-c', str(config)]), \
+                     patch.object(app.os, 'geteuid', return_value=1000 if scenario == 'nonroot' else 0, create=True), \
+                     patch.object(app, 'pick_log_folder', return_value=folder), \
+                     patch.object(app, 'setup_logger', return_value=(self.log, self.err, str(Path(folder, 'unused.err')))) as setup, \
+                     patch.object(app, 'save_docker_image_digests') as digest, \
+                     patch.object(app, 'create_snapshot'), \
+                     patch.object(app, 'delete_old_snapshots', side_effect=app.CommandError(['zfs', 'list'], 1, '', 'denied') if scenario == 'dataset-failure' else None), \
+                     patch.object(app, 'delete_old_files') as cleanup, \
+                     patch.object(app, 'MailTo', return_value=True) as mail, \
+                     patch.object(mqtt.importlib, 'import_module'), \
+                     patch.object(mqtt, 'publish_report') as publish:
+                    if scenario == 'success':
+                        app.main()
+                    elif scenario == 'nonroot':
+                        with self.assertRaises(SystemExit):
+                            app.main()
+                    else:
+                        with self.assertRaises(app.DatasetCommandFailuresError):
+                            app.main()
+                    self.assertEqual(setup.call_args.kwargs['prefix'], 'Custom')
+                    mail.assert_called_once()
+                    for key, expected in [('prefix', 'Custom'), ('title', 'Shared title'), ('comment', 'First\nSecond')]:
+                        self.assertEqual(mail.call_args.kwargs[key], expected)
+                    publish.assert_called_once()
+                    payload = publish.call_args.args[1]
+                    self.assertEqual(payload['title'], 'Shared title')
+                    self.assertEqual(payload['comment'], 'First\nSecond')
+                    self.assertEqual(payload['status'], 'success' if scenario == 'success' else 'failure')
+                    if scenario != 'nonroot':
+                        self.assertEqual(digest.call_args.kwargs['prefix'], 'Custom')
+                        self.assertEqual(cleanup.call_args.kwargs['prefix'], 'Custom')
+
+    def test_fixed_log_folder_has_no_temporary_fallback(self):
+        with temporary_directory() as folder:
+            target = str(Path(folder, 'logs'))
+            with patch.object(app.os, 'geteuid', return_value=1000, create=True):
+                self.assertEqual(app.pick_log_folder(target), target)
+            self.assertTrue(Path(target).is_dir())
+        with patch.object(app.os, 'makedirs', side_effect=PermissionError('unwritable')) as mkdir:
+            with self.assertRaises(PermissionError):
+                app.pick_log_folder('fixed/logs')
+        mkdir.assert_called_once_with('fixed/logs', exist_ok=True)
+
+    def test_unwritable_logs_prevent_external_operations(self):
+        args = argparse.Namespace(dry_run=False, command='create')
+        with patch.object(app, 'pick_log_folder', side_effect=PermissionError('unwritable')), \
+             patch.object(app.subprocess, 'run') as run, patch.object(app, 'MailTo') as mail:
+            with self.assertRaises(PermissionError):
+                app.run(args, Mock())
+        run.assert_not_called()
+        mail.assert_not_called()
+
+    def test_empty_prefix_uses_actual_source_or_frozen_basename(self):
+        self.assertEqual(app.default_log_prefix(), 'SnapBeforeWatchTower')
+        with patch.object(app.sys, 'frozen', True, create=True), \
+             patch.object(app.sys, 'executable', '/opt/jobs/CustomBinary'):
+            prefix, title, comment = app.load_report_settings({'logging': {'prefix': ''}})
+        self.assertEqual((prefix, title, comment), ('CustomBinary', '', ''))
+        with patch.object(app.sys, 'frozen', True, create=True), \
+             patch.object(app.sys, 'executable', '/opt/jobs/Custom binary æ'):
+            self.assertEqual(app.load_report_settings({})[0], 'Custom binary æ')
+
 
 class CLITests(unittest.TestCase):
     """Verify the public config/help/version interface and rejection of retired operational flags."""
@@ -605,7 +782,7 @@ class CLITests(unittest.TestCase):
     def test_version_exits_without_config(self):
         result = self.run_cli('--version')
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
-        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.14')
+        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.16')
         self.assertEqual(result.stderr, '')
 
     def test_config_is_required_and_retired_operational_flags_are_rejected(self):

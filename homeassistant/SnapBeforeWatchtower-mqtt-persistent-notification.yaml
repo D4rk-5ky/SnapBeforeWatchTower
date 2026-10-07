@@ -6,7 +6,7 @@ triggers:
   - trigger: mqtt
     id: snapbeforewatchtower
     options:
-      topic: homeassistant/SnapBeforeWatchTower/Zotac-RI531/status
+      topic: homeassistant/SnapBeforeWatchTower/example-host/status
 conditions: []
 actions:
   - variables:
@@ -23,6 +23,12 @@ actions:
              | default(trigger.payload_json.job | default('SnapBeforeWatchTower'))) }}
         {% else %}
           SnapBeforeWatchTower
+        {% endif %}
+      report_comment: |-
+        {% if trigger.payload_json is defined %}
+          {{ trigger.payload_json.comment | default('') }}
+        {% else %}
+          {{ '' }}
         {% endif %}
       report_exit_code: |-
         {% if trigger.payload_json is defined %}
@@ -65,6 +71,8 @@ actions:
               message: >-
                 {{ report_title }} finished successfully.
 
+                {% if report_comment %}{{ report_comment }}{% endif %}
+
                 Mode: {{ 'DRY-RUN' if report_dry_run | bool else 'LIVE' }}
                 Exit code: {{ report_exit_code }} {% if report_warning | bool %}
 
@@ -82,6 +90,7 @@ actions:
               title: ❌SnapBeforeWatchTower failed
               message: |-
                 {{ report_title }} failed.
+                {% if report_comment %}{{ report_comment }}{% endif %}
                 Mode: {{ 'DRY-RUN' if report_dry_run | bool else 'LIVE' }}
                 Exit code: {{ report_exit_code }}
                 Error: {{ report_error }}

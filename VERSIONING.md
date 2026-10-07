@@ -1,8 +1,58 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.14. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.16. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.16 — 2026-10-07
+
+### Complete code changes
+
+- Increment __version__ and version fixtures from 0.0.15 to 0.0.16.
+- Add optional [logging].prefix and [report].title/comment to TOML. Add default_log_prefix() and load_report_settings() to validate these settings before operational work. Empty/omitted prefix uses the resolved script/executable basename; title is single-line; comment preserves TOML-decoded whitespace/newlines. Reject unknown keys, wrong types, NUL, unsafe prefix paths/globs, and multiline prefix/title values.
+- Extend existing setup_logger(), save_docker_image_digests(), delete_old_files() and MailTo() with backward-compatible optional arguments. Reuse the existing functions instead of duplicating log, retention or mail implementations.
+- Apply the chosen prefix consistently to .log/.err/.digest names, old-log group retention and email attachment selection. Regex-escape and anchor retention matching; glob-escape the exact PREFIX-Date-* mail lookup so other/overlapping prefixes are not selected. Retention age/count rules remain unchanged. Previous-prefix files remain in place; ZFS snapshot names remain unchanged.
+- Add the shared report title/comment at the top of the email body before the existing outcome/log content. Preserve existing SUCCESS/FAILED/DRY-RUN subjects and mail delivery/result rules. Propagate metadata to all five mail paths, including non-root failure.
+- A nonempty [report].title overrides the MQTT-specific title; empty/omitted shared title preserves [mqtt].title for MQTT and uses the actual script/executable basename for the email heading.
+- Extend mqtt_report.build_payload() and RunReporter with an optional comment argument; add the comment JSON field to every published payload and preserve newlines across JSON/worker transport. Keep status/name/job, QoS, retain=false, TLS/auth, timeout, secret handling and non-masking failure behavior.
+- At the user's explicit choice, store all generated logs beside the actual script/executable, including dist/logs/ for a binary in dist/. Change runtime_base_dir() accordingly and make pick_log_folder() propagate directory errors without a temporary fallback. Remove its unused write-probe helper; retain the old choose_log_folder() compatibility helper and the pick_log_folder tmp_name argument, which is now unused.
+- An unwritable fixed log folder stops the run before ZFS/Docker; ordinary non-root operation still fails before those commands. Update the non-root log message to describe the actual location. Existing root checks, snapshot/continuation/dry-run safety and operation ordering remain intact.
+- Extend --help with logging/report settings, newline support and fixed log storage; public flags remain unchanged.
+
+### Tests, documentation and packaging
+
+- Add 12 regression tests covering defaults, shared/legacy title precedence, TOML newline forms and literal backslashes, invalid-setting rejection, custom log/digest names, exact-prefix retention/attachments, email heading/newlines, main success/failure/non-root metadata, fixed log location and unwritable-folder refusal, source/frozen basename selection, JSON/worker comment preservation and final reporter outcomes.
+- Update the frozen-dist path test for the requested runtime location and rename it to reflect that policy. The suite now contains 62 tests.
+- Update the Home Assistant example to read the optional comment (empty for older payloads) and display it in success/failure notifications; keep the topic, trigger and status branching unchanged.
+- Keep all 27 available TOML settings in config-example.toml and config.example.md. Explain escaped and multiline TOML comments, title precedence, prefix restrictions/retention scope, body-heading vs subject behavior and fixed log location.
+- Update README.md and commented_code_map.md for every changed/new function/test/command and current usage. Preserve the exact disclaimer directly below the README title and keep SAFETY.md unchanged.
+- Update dist/README.md to explain actual runtime log storage. Preserve the build script/spec/dependencies and two-file immediately-after-build layout; document that the next rebuild deletes dist/logs/ under the existing cleanup contract.
+- Update VERIFICATION.md with this release's actual checks and live-testing limits; regenerate manifest.sha256 and deliver a clean source ZIP, checksum and comparison report.
+- Preserve every file path from 0.0.15 and the originally supplied archive, retain previous release artifacts unchanged, and verify ZIP/extracted bytes and original metadata. No cache, bytecode, generated build, runtime file or workspace helper belongs in the package.
+
+## 0.0.15 — 2026-10-07
+
+### Complete application and test changes
+
+- Increment __version__ from 0.0.14 to 0.0.15 for CLI and MQTT release identification.
+- Keep the existing public flags (-c CONFIG, -h/--help, --version) and TOML operational interface. Replace manually restricted usage with argparse-generated usage so help/version also appear in the usage line.
+- Use RawDescriptionHelpFormatter and expand help with examples, CONFIG path rules, create/delete modes, TOML-only settings, Linux/root requirements, dry-run listing/logging/notification behavior, and the complete configuration/README references.
+- Make the two frozen-runtime path regression assertions use native resolved paths instead of Linux-only string expectations. Runtime code remains unchanged; the baseline had 48/50 passing tests on Windows solely because of those comparisons.
+- Update version expectations and MQTT fixture versions in tests/test_app.py and tests/test_mqtt.py to 0.0.15.
+- Preserve every other operational function/class unchanged, including unused original helpers, retention selection, root enforcement, dry-run mutation boundaries, continuation policies, Docker/mail/MQTT flow and safety behavior. mqtt_report.py and build inputs remain byte-identical to the supplied archive.
+
+### Documentation, examples, verification, and packaging
+
+- Move the exact supplied disclaimer block immediately below the README title; keep SAFETY.md unchanged.
+- Keep README focused on current use: clarify CONFIG/TOML path bases, TLS port defaults, email log selection, dry-run empty-error cleanup, exit results, create/delete workflows, offline-test and checksum commands. Remove transitional/history wording and avoid claiming bit-reproducible builds.
+- Explain Home Assistant setup through the visual editor, direct example paste with a YAML-editor fallback, matching MQTT topics, editable notification actions, and Trace-based delivery verification without claiming live tests.
+- Replace the host-specific MQTT topic/title in README, config-example.toml, config.example.md and the Home Assistant example with synchronized example-host/Example host placeholders. Only the shipped example trigger topic changes; its branching and notification actions are preserved. No private operational config is included.
+- Keep all 24 TOML options and dry-run/disabled-notification example defaults. Clarify title/port defaults, CONFIG path rules, topic constraints, and consistent customization comments.
+- Expand commented_code_map.md for current help, MQTTPublishError.__init__, source/frozen workers, portable test assertions, every build command/control and spec object, setup/validation commands, and release documentation/manifest roles. Correct the fixed-name log write-probe explanation.
+- Update this VERSIONING.md while retaining the entire supplied historical release entries. Keep one version history file rather than a conflicting case-only duplicate on Windows.
+- Replace stale prior-release VERIFICATION.md claims with checks performed on this release and explicit unavailable Linux/live/build checks.
+- Add manifest.sha256 covering every other delivered project file. Preserve all 19 original file paths and original ZIP create_system/external_attr metadata, and verify archive content plus extracted bytes against the release and original baseline.
+- Deliver a clean source ZIP, its checksum, and an original-to-release manifest report alongside the editable project; exclude runtime files, caches, bytecode, generated executables/build state, and workspace helpers.
 
 ## 0.0.14 — 2026-10-02
 

@@ -3,7 +3,8 @@
 #   sudo python3 SnapBeforeWatchTower.py -c config.toml
 # CLI reference: python3 SnapBeforeWatchTower.py --help
 # Version:       python3 SnapBeforeWatchTower.py --version
-# Relative file paths in this TOML are resolved relative to this TOML file.
+# Relative dataset/TLS file paths use the TOML directory. dataset_file also expands ~.
+# The -c CONFIG path itself uses the current working directory when relative.
 
 [application]
 # Operation to perform: "create" creates a snapshot and then applies retention;
@@ -41,6 +42,30 @@ continue_on_missing_dataset = true
 # immediately. This does not make global/config/root/input failures recoverable.
 continue_on_other_failures = true
 
+[logging]
+# Prefix for generated .log/.err/.digest filenames. Empty uses the actual script/
+# executable basename without its final extension. Default when omitted: empty.
+# Custom prefixes start with an ASCII letter/digit and use only letters, digits,
+# dots, underscores and hyphens. No paths or wildcard characters are allowed.
+# All generated files stay in logs/ beside the actual script/executable.
+# There is no temporary fallback. An unwritable log folder stops the run before ZFS/Docker.
+# Retention and email attachments use this prefix; files with another prefix are kept.
+prefix = "SnapBeforeWatchTower"
+
+[report]
+# Optional human-readable title at the top of email and as MQTT title/name/job.
+# A nonempty value overrides [mqtt].title. Empty preserves [mqtt].title for MQTT,
+# and uses the actual script/executable basename for the email body heading.
+# This is a body heading; existing SUCCESS/FAILED/DRY-RUN email subjects are retained.
+title = "Example host - SnapBeforeWatchTower"
+
+# Optional free-form comment in email and MQTT JSON's comment field. Default: empty.
+# Double-quoted TOML strings decode \n into a real newline:
+# comment = "First line\nSecond line"
+# TOML triple-quoted multiline strings also work. No additional unescaping is done;
+# literal TOML strings retain literal backslashes. Whitespace/newlines are preserved.
+comment = ""
+
 [mail]
 # Optional mail notification feature. Set true to enable failure mail.
 enabled = false
@@ -63,14 +88,17 @@ on_success = false
 # MQTT broker hostname or IP address.
 host = "mqtt.example.local"
 
-# MQTT broker TCP port. Use 1883 for normal MQTT or commonly 8883 for MQTT over TLS.
+# MQTT broker TCP port, integer 1-65535. Use 1883 for normal MQTT or commonly 8883 for TLS.
+# If omitted, the default is 8883 with tls=true or 1883 otherwise. An explicit port is kept.
 port = 1883
 
-# Publish topic. Wildcards (+ and #) are not allowed because this is a publish topic.
-topic = "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status"
+# Publish topic: nonempty, no NUL, no wildcards (+/#), at most 65535 UTF-8 bytes.
+# Replace example-host consistently here and in the Home Assistant MQTT trigger.
+topic = "homeassistant/SnapBeforeWatchTower/example-host/status"
 
-# Human-readable job name copied into the MQTT payload fields title, name, and job.
-title = "Zotac RI531 - SnapBeforeWatchTower"
+# MQTT-only title fallback (default: SnapBeforeWatchTower). A nonempty [report].title
+# overrides this value and supplies the shared email/MQTT heading.
+title = "Example host - SnapBeforeWatchTower"
 
 # Optional MQTT username. Use an empty string for no username authentication.
 username = "your-mqtt-user"

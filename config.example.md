@@ -12,7 +12,7 @@ sudo python3 SnapBeforeWatchTower.py -c config.toml
 
 | Flag | Required | Meaning |
 | --- | --- | --- |
-| `-c CONFIG` | Yes for normal operation | Path to the TOML configuration file. Relative file paths *inside* the TOML file are resolved relative to the TOML file itself. |
+| `-c CONFIG` | Yes for normal operation | Path to the TOML configuration file. A relative CONFIG path uses the current working directory. Relative dataset/TLS paths *inside* TOML use the TOML directory; dataset_file also expands ~. |
 | `-h`, `--help` | No | Show complete CLI help and exit before configuration loading or operational work. |
 | `--version` | No | Show the application version and exit before configuration loading or operational work. |
 
@@ -26,7 +26,7 @@ python3 SnapBeforeWatchTower.py --version
 sudo ./dist/SnapBeforeWatchTower -c config.toml
 ```
 
-The PyInstaller build is produced by `./build-pyinstaller.sh` at `dist/SnapBeforeWatchTower`. All generated build state (virtual environment, pip cache, PyInstaller work files, and PyInstaller config/cache) is kept under the gitignored `.build-pyinstaller/` directory. The build script cleans generated/stale `dist/` content while retaining `dist/README.md`, and fails unless the final directory contains exactly `SnapBeforeWatchTower` and `README.md`. It bundles Python plus Paho MQTT; external host commands such as ZFS, Docker, and `mail` remain system requirements.
+The PyInstaller build is produced by `bash build-pyinstaller.sh` at `dist/SnapBeforeWatchTower`. All generated build state (virtual environment, pip cache, PyInstaller work files, and PyInstaller config/cache) is kept under the gitignored `.build-pyinstaller/` directory. The build script cleans generated/stale `dist/` content while retaining `dist/README.md`, and fails unless the final directory contains exactly `SnapBeforeWatchTower` and `README.md`. It bundles Python plus Paho MQTT; external host commands such as ZFS, Docker, and `mail` remain system requirements.
 
 There are no separate public flags for command mode, datasets, retention, mail, MQTT, or dry-run. Those runtime settings belong in TOML so one file describes the whole job.
 
@@ -44,6 +44,13 @@ dry_run = true
 continue_on_missing_dataset = true
 continue_on_other_failures = true
 
+[logging]
+prefix = "SnapBeforeWatchTower"
+
+[report]
+title = "Example host - SnapBeforeWatchTower"
+comment = ""
+
 [mail]
 enabled = false
 recipient = "you@example.com"
@@ -54,8 +61,8 @@ enabled = false
 on_success = false
 host = "mqtt.example.local"
 port = 1883
-topic = "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status"
-title = "Zotac RI531 - SnapBeforeWatchTower"
+topic = "homeassistant/SnapBeforeWatchTower/example-host/status"
+title = "Example host - SnapBeforeWatchTower"
 username = "your-mqtt-user"
 password = "<String>"
 qos = 0
@@ -78,6 +85,49 @@ timeout = 15
 | `continue_on_missing_dataset` | Default `true` | When ZFS explicitly reports a configured dataset as nonexistent, `true` records the failure and continues with the next configured dataset; `false` stops immediately. Either way, the final run is failure and enabled mail/MQTT reports it. |
 | `continue_on_other_failures` | Default `true` | For any other checked per-dataset `zfs list` or `zfs destroy` failure, `true` records the failure and continues with the next configured dataset; `false` stops immediately. It does not make global/config/root/input or unrelated snapshot-create failures recoverable. |
 
+## `[logging]` and `[report]` — optional
+
+```toml
+[logging]
+prefix = "SnapBeforeWatchTower"
+
+[report]
+title = "Example host - SnapBeforeWatchTower"
+comment = ""
+```
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `[logging].prefix` | `""` | Names the `.log`, `.err`, and `.digest` files. Empty uses the actual script/executable basename without its final extension. Custom values start with an ASCII letter/digit and use only letters, digits, dots, underscores, or hyphens. Paths, wildcard characters, and line breaks are rejected. |
+| `[report].title` | `""` | Single-line heading at the top of the email body and the MQTT `title`, `name`, and `job` fields. A nonempty value overrides `[mqtt].title`. Empty uses the script/executable basename for email and preserves `[mqtt].title` for MQTT. Existing SUCCESS/FAILED/DRY-RUN email subjects are retained. |
+| `[report].comment` | `""` | Free-form text included after the email heading and in MQTT's `comment` field. Newlines, blank lines and surrounding whitespace are preserved. NUL and non-string values are rejected. |
+
+All generated `.log`/`.err`/`.digest` files are stored in `logs/` beside the actual source script or frozen executable. This includes `dist/logs/` when the executable is run from `dist/`. There is no temporary fallback; an unwritable folder stops the run before ZFS or Docker work. Root is still required for the operation, including dry-run.
+
+Log retention and mail attachment lookup use the configured prefix. Changing it leaves previous-prefix files in place; snapshot naming and snapshot retention still use `SnapBeforeWatchTower-Date-...` and are unaffected. If mail and MQTT are disabled, report settings do not enable them.
+
+For a two-line comment, use a double-quoted TOML string with a newline escape:
+
+```toml
+[report]
+title = "Example host - SnapBeforeWatchTower"
+comment = "First line\nSecond line"
+```
+
+Or write the lines directly in a multiline TOML string:
+
+```toml
+[report]
+title = "Example host - SnapBeforeWatchTower"
+comment = """
+First line
+
+Second line
+"""
+```
+
+Replace the existing `[report]` table when trying an example; TOML does not allow duplicate tables. TOML removes the newline immediately after the opening triple quotes. Remaining line breaks are retained in email and JSON. A literal TOML string such as `comment = 'First\nSecond'` keeps the backslash and `n` characters, as TOML specifies. The application does not perform a second unescape pass. MQTT represents newline characters as JSON escapes on the wire; consumers recover real line breaks when decoding JSON.
+
 ## `[mail]` — optional
 
 The whole `[mail]` table may be omitted; mail then defaults to disabled.
@@ -98,8 +148,8 @@ The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install
 | `on_success` | Default `false` | Also publishes success reports for real and dry-run executions. When false, only successful MQTT reports are suppressed; failure reports still publish. |
 | `host` | Required when enabled | MQTT broker hostname or IP address. |
 | `port` | Default `1883`, or `8883` when TLS is enabled and the key is omitted | Broker TCP port, integer 1–65535. |
-| `topic` | Required when enabled | Publish topic. `+` and `#` wildcards are rejected. It must match the Home Assistant MQTT trigger topic. |
-| `title` | Default `"SnapBeforeWatchTower"` | Human-readable run name copied to the MQTT payload fields `title`, `name`, and `job`. |
+| `topic` | Required when enabled | Nonempty publish topic without NUL, at most 65535 UTF-8 bytes. `+` and `#` wildcards are rejected. Replace `example-host` consistently here and in the Home Assistant MQTT trigger. |
+| `title` | Default `"SnapBeforeWatchTower"` | MQTT title fallback for `title`, `name`, and `job`. A nonempty `[report].title` overrides it. |
 | `username` | Optional | Broker username. Use an empty string for no username. |
 | `password` | Optional | Plain TOML password string. A non-empty password requires a non-empty username. Protect `config.toml` with restrictive permissions. |
 | `qos` | Default `0` | MQTT QoS: `0`, `1`, or `2`. Reports are always non-retained. |
@@ -109,7 +159,7 @@ The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install
 | `key_file` | Optional | Client private-key path for mutual TLS. Must be paired with `cert_file`; relative paths are TOML-relative. |
 | `timeout` | Default `15` | Total MQTT worker timeout in seconds, integer 1–120. |
 
-Unknown TOML sections and unknown keys are rejected. The retired JSON MQTT configuration and old multi-flag interface are not supported.
+Unknown TOML sections and unknown keys are rejected. All operational configuration uses the TOML file.
 
 ## Dataset file
 

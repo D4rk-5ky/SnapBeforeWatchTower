@@ -1,5 +1,30 @@
 # SnapBeforeWatchTower
 
+## ⚠️ Disclaimer / Liability
+
+**Use this script at your own risk.**
+
+The author takes **no responsibility or liability** for any data loss, service disruption, misconfiguration, service outage, missed backups, credential exposure, or other damage that may occur from using this script.
+
+Before running it in production, you **must**:
+
+- Read the entire source code
+- Understand exactly what it does (and what it does *not* do)
+- Review and adapt it to your own environment
+- Test it carefully in a non‑production setup
+
+By using this script, **you accept full responsibility** for its effects.
+
+⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
+
+## Disclaimer
+
+This project is AI-assisted / vibe-coded software created as a hobby project. It has not been professionally audited and may contain bugs, unsafe behavior, data-loss issues, security problems, or incorrect assumptions.
+
+You are responsible for reviewing the code, testing it in a safe environment, making backups, and understanding what it does before using it on real data. The author is not responsible for damage, data loss, broken systems, security issues, or other problems caused by using this software.
+
+---
+
 SnapBeforeWatchTower creates ZFS snapshots for datasets listed in a text file, records Docker image digests during `create` runs, and removes old matching snapshots and log groups according to an age/count retention policy. Configuration is supplied through one TOML file.
 
 The application does **not** start Watchtower, update containers, restore data, stop services, or create application-consistent snapshots.
@@ -66,7 +91,7 @@ The public command-line flags are:
 
 | Flag | Meaning |
 | --- | --- |
-| `-c CONFIG` | Required for normal operation. Load the TOML configuration file from `CONFIG`. |
+| `-c CONFIG` | Required for normal operation. Load all settings from this TOML file. A relative `CONFIG` path uses the current working directory. |
 | `-h`, `--help` | Show the complete command-line help and exit without loading configuration or running ZFS/Docker/mail/MQTT operations. |
 | `--version` | Show the SnapBeforeWatchTower application version and exit without loading configuration or running operations. |
 
@@ -80,7 +105,7 @@ sudo python3 SnapBeforeWatchTower.py -c config.toml
 
 There are no separate command, dataset, retention, mail, MQTT, or dry-run CLI flags. Those operational settings remain in TOML so one file describes the whole scheduled job.
 
-Relative paths in the TOML file are resolved relative to the TOML file itself. This makes cron/systemd execution independent of the shell's working directory.
+Relative dataset and TLS file paths in the TOML file are resolved relative to the TOML file itself. `dataset_file` also expands `~`; TLS paths do not. This makes cron/systemd execution independent of the shell's working directory.
 
 ## Configuration
 
@@ -144,8 +169,8 @@ enabled = false
 on_success = false
 host = "mqtt.example.local"
 port = 1883
-topic = "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status"
-title = "Zotac RI531 - SnapBeforeWatchTower"
+topic = "homeassistant/SnapBeforeWatchTower/example-host/status"
+title = "Example host - SnapBeforeWatchTower"
 username = "your-mqtt-user"
 password = "<String>"
 qos = 0
@@ -160,11 +185,11 @@ When `enabled = false`, MQTT reporting is disabled. In source mode `paho-mqtt` i
 
 When `enabled = true`, MQTT failure reports are always attempted, including during dry-run. `on_success = true` additionally publishes success reports for both real and dry-run executions; `on_success = false` suppresses only successful MQTT reports. Because a dry-run can still fail and must then report that failure, `paho-mqtt` is required whenever MQTT is enabled. Before a publish attempt the run log now says that the final MQTT report is being attempted; success is logged as published. If the bounded worker fails, the parent logs a credential-safe exception class such as `ConnectionRefusedError` instead of silently reducing the failure to a generic no-message symptom.
 
-When `enabled = true`, `host` and `topic` are required non-empty strings. `topic` cannot contain `+` or `#`. `port` must be 1–65535, `qos` must be 0, 1, or 2, and `timeout` must be 1–120 seconds. Reports are always published with `retain = false`.
+When `enabled = true`, `host` and `topic` are required non-empty strings. `topic` cannot contain `+` or `#`. `port` must be 1–65535, `qos` must be 0, 1, or 2, and `timeout` must be 1–120 seconds. Reports are always published with `retain = false`. `[mqtt].title` defaults to `"SnapBeforeWatchTower"` and is overridden by a nonempty `[report].title`; `qos` to `0`, `timeout` to `15`, and `tls` and `on_success` to `false` when omitted.
 
 `username` and `password` are plain TOML strings. An empty string disables that optional value. A non-empty password requires a non-empty username. Because the password is stored directly in the TOML file, protect the operational config with restrictive filesystem permissions and do not commit or share it.
 
-`tls = true` enables certificate and hostname verification. `ca_file` is optional; an empty string uses system trust. `cert_file` and `key_file` must either both be empty or both point to files. Relative certificate/key paths are resolved relative to the TOML file.
+`tls = true` enables certificate and hostname verification. If `port` is omitted, it defaults to `8883` with TLS or `1883` without TLS. An explicitly configured port is kept; change the example's `port = 1883` to `8883` when appropriate for your TLS broker. `ca_file` is optional; an empty string uses system trust. `cert_file` and `key_file` must either both be empty or both point to files. Relative certificate/key paths are resolved relative to the TOML file.
 
 The final MQTT payload contains `status`, `title`, `name`, `job`, `exit_code`, `warning`, `error`, `stderr`, `command`, `version`, `run_id`, `finished_at`, and `dry_run`. `dry_run` is `true` for preview runs and `false` for real runs. Exit code 0 reports `status: success`; nonzero outcomes report `status: failure`. Missing datasets and continued per-dataset `zfs list`/`zfs destroy` failures do not introduce new status values: after any configured continuation, the final report is still `status: failure` with `exit_code: 1`. Missing-only runs identify the missing dataset name(s) and the `dataset does not exist` reason in `error`; continued list/destroy failures identify the affected dataset(s), while detailed current-run command errors remain available in bounded `stderr`. This keeps the supplied Home Assistant success/failure branching unchanged. Nonfatal messages captured by the error logger can produce `warning: true` while the overall status remains success. Error fields are bounded to 4096 characters.
 
@@ -217,17 +242,17 @@ Each dataset is processed separately and a new timestamp is generated for each s
 
 ## Log and digest files
 
-Logs are normally written under `./logs` beside the script when running as root. If that location is not writable, or when the script is run without root, the application uses a temporary fallback directory.
+Logs are always written to `logs/` beside the actual source script or executable. If the directory is unwritable, the run fails before ZFS/Docker work; no temporary fallback is used. `[logging].prefix` controls the generated file names.
 
 A run can create:
 
 ```text
-SnapBeforeWatchTower-Date-YYYY-MM-DD_HH_MM_SS.log
-SnapBeforeWatchTower-Date-YYYY-MM-DD_HH_MM_SS.err
-SnapBeforeWatchTower-Date-YYYY-MM-DD_HH_MM_SS.digest
+PREFIX-Date-YYYY-MM-DD_HH_MM_SS.log
+PREFIX-Date-YYYY-MM-DD_HH_MM_SS.err
+PREFIX-Date-YYYY-MM-DD_HH_MM_SS.digest
 ```
 
-An empty current `.err` is removed at the end of the run. Managed old log/digest files are grouped by timestamp and use the same `older_than`/`retain_count` policy as snapshots.
+An empty current `.err` is removed at the end of the run, including dry-run. Mail reads the newest log/error files independently, so a report can include an older non-empty error file when the current one is unavailable. Managed old log/digest files are grouped by timestamp and use the same `older_than`/`retain_count` policy as snapshots.
 
 During a real `create` run, Docker digests are collected with:
 
@@ -257,31 +282,36 @@ The application does not use shell interpolation for these commands; arguments a
 
 `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` contains a compatible Home Assistant automation. Its MQTT trigger topic must exactly match `[mqtt].topic` in your TOML configuration. The automation reads the payload `dry_run` flag and displays `DRY-RUN` or `LIVE` in success and failure notifications. Missing datasets and continued list/destroy failures still use `status: failure`, and the automation includes the payload `error` and `stderr` fields so the failure reason remains visible.
 
+Set the MQTT trigger topic to exactly match `[mqtt].topic`. The shipped examples use `homeassistant/SnapBeforeWatchTower/example-host/status`; replace `example-host` consistently in your own TOML and automation. The automation has one MQTT trigger and branches on the JSON `status` using Choose. It displays `DRY-RUN` or `LIVE`, the failure `error`/`stderr`, the optional multiline `comment`, and any success warning. The templates extract JSON fields and format notification text; the trigger and notification actions can be edited visually.
+
+Enabling this automation does not enable application MQTT reporting: set `[mqtt].enabled = true` separately. Successful preview runs need `[mqtt].on_success = true` to publish a test report. Use a broker test message or an actual disposable-dataset dry-run and inspect the automation Trace to verify delivery and branching.
+
 ## Safety
 
 This program performs destructive ZFS snapshot deletion and log deletion. Review `SAFETY.md`, start with `dry_run = true`, verify the resulting plan/logs, and keep independent backups before using real deletion.
 
-## ⚠️ Disclaimer / Liability
+## Exit results and validation
 
-**Use this script at your own risk.**
+| Exit result | Meaning |
+| --- | --- |
+| `0` | Operation completed, or an informational `--help`/`--version` command exited. Nonfatal digest, log-cleanup, or notification errors may still have been logged. |
+| `1` | Root refusal or an uncaught operational/configured-dataset failure. Continued per-dataset failures still produce an overall failure. |
+| `2` | CLI or configuration loading/validation error, before operational work and notification reporting. |
 
-The author takes **no responsibility or liability** for any data loss, service disruption, misconfiguration, service outage, missed backups, credential exposure, or other damage that may occur from using this script.
+Review the logs as well as the exit code. MQTT reports logged nonfatal errors as `warning: true` on an otherwise successful run. Notification delivery failure does not change the operation result; a successful exit alone does not prove delivery. Earlier completed snapshots or deletions are not rolled back on later failure.
 
-Before running it in production, you **must**:
+To create snapshots, set `[application].command = "create"`. To perform retention only, set it to `"delete"`. Keep `dry_run = true` while checking the intended plan; after testing on disposable data, set it to `false` for real operations. Invoke the same `-c CONFIG` command for either mode.
 
-- Read the entire source code
-- Understand exactly what it does (and what it does *not* do)
-- Review and adapt it to your own environment
-- Test it carefully in a non‑production setup
+Run the included offline regression tests from the project directory with Python 3.11 or newer:
 
-By using this script, **you accept full responsibility** for its effects.
+```bash
+python3 -B -m unittest discover -s tests -v
+```
 
-⚠️ AI-assisted / vibe-coded experimental software. Use at your own risk.
+`-B` prevents bytecode cache creation, `discover -s tests` finds the shipped tests, and `-v` shows each result. External application commands and MQTT delivery are mocked in these tests. Read `VERIFICATION.md` for release checks and live-testing limits. `manifest.sha256` lists release file hashes, excluding itself; on Linux verify them from this directory with:
 
-## Disclaimer
+```bash
+sha256sum -c manifest.sha256
+```
 
-This project is AI-assisted / vibe-coded software created as a hobby project. It has not been professionally audited and may contain bugs, unsafe behavior, data-loss issues, security problems, or incorrect assumptions.
-
-You are responsible for reviewing the code, testing it in a safe environment, making backups, and understanding what it does before using it on real data. The author is not responsible for damage, data loss, broken systems, security issues, or other problems caused by using this software.
-
----
+This checks file integrity; it does not certify operational safety.

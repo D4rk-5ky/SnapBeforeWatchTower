@@ -14,7 +14,7 @@ This map describes the current application, why each function/class exists, and 
 - `CustomLogger(logging.Logger)` — retained original helper that builds a logger with file and console handlers. The current main flow uses `setup_logger()` instead, but this class is preserved because it came from the original application and may still be useful to installations importing it.
   - `CustomLogger.__init__(name, log_filename)` — installs DEBUG file output and INFO console output with the standard formatter.
 
-- `setup_logger(log_folder, log_date)` — creates the active main logger and error logger for a run. It returns both loggers plus the `.err` path so final cleanup can remove an empty error file.
+- `setup_logger(log_folder, log_date, prefix="SnapBeforeWatchTower")` — creates the active main logger and error logger for a run with the configured prefix on .log/.err names. It returns both loggers plus the `.err` path so final cleanup can remove an empty error file.
   - nested `_build_logger(name, level, handlers)` — centralizes handler formatting/installation and clears stale handlers so repeated in-process test/application runs do not duplicate output.
 
 - `choose_log_folder(preferred_root_folder, fallback_folder=None)` — retained original root/non-root log-folder helper. The current run path uses `pick_log_folder()`; this function remains for compatibility with the original source.
@@ -45,11 +45,11 @@ This map describes the current application, why each function/class exists, and 
 
 - `run_cmd(cmd, logger=None, error_logger=None, check=True, dry_run=False)` — shared captured-subprocess helper. It avoids terminal spam, records failures through the error logger, raises `CommandError` when requested, and suppresses actual execution when `dry_run=True`.
 
-- `get_newest_files(log_dir, prefix)` — finds the newest `.log` and `.err` independently by modification time for email reporting. Independent selection preserves the application's existing mail behavior even when one file is missing.
+- `get_newest_files(log_dir, prefix)` — finds the newest .log and .err independently by modification time, restricted to the exact escaped PREFIX-Date-* generated name pattern so overlapping prefixes do not supply another job's attachments. Independent selection preserves the application's existing mail behavior even when one file is missing.
 
 - `send_mail(subject, body, recipient, attachment_files=None)` — invokes the local `mail` program, placing all options before the recipient for compatibility with common mail/mailx implementations. It returns the mail process exit code and stderr instead of hiding delivery failure.
 
-- `MailTo(logger, error_logger, recipient, log_folder, subject=..., intro=..., prefix=...)` — builds the email body from the newest non-empty error log and newest main log, attaches available logs, sends the message, then delegates result logging to `WasMailSent()`.
+- `MailTo(logger, error_logger, recipient, log_folder, subject=..., intro=..., prefix=..., title="", comment="")` — places the optional shared heading and unmodified multiline comment at the top, then builds the email body from the newest error log (included only if non-empty) and newest main log, attaches available logs, sends the message, then delegates result logging to `WasMailSent()`.
 
 - `WasMailSent(logger, error_logger, MailExitCode, popenstderr)` — writes a clear success/failure result for the local mail command without changing the underlying snapshot result.
 
@@ -63,11 +63,15 @@ This map describes the current application, why each function/class exists, and 
 
 - `delete_old_snapshots(logger, error_logger, dataset, older_than, retain_count, dry_run=False)` — lists snapshots for one dataset, selects only names matching SnapBeforeWatchTower's managed pattern, protects the newest count floor, applies the strict age cutoff, then destroys only snapshots that satisfy both rules. Invalid/unmanaged names are never selected. The ZFS list is executed even in dry-run so the preview is based on real current state.
 
-- `delete_old_files(logger, error_logger, log_folder, older_than, retain_count, dry_run=False)` — groups `.log`, `.err`, and `.digest` files by embedded run timestamp, protects the configured newest group count, then deletes only old eligible groups. Dry-run reports candidates without removing them.
+- `delete_old_files(logger, error_logger, log_folder, older_than, retain_count, dry_run=False, prefix="SnapBeforeWatchTower")` — matches an anchored, regex-escaped prefix and groups `.log`, `.err`, and `.digest` files by embedded run timestamp, protects the configured newest group count, then deletes only old eligible groups. Dry-run reports candidates without removing them.
 
 - `print_separator(logger, error_logger=None)` — writes the existing visual separator to the selected logger so terminal/log output remains readable.
 
-- `save_docker_image_digests(logger, error_logger, log_folder, log_date, dry_run=False)` — runs `docker images --digests` during real `create` operations and writes the output into the same timestamp group as the logs. Dry-run skips Docker. Docker failure is nonfatal but is captured as an error/warning, and partial digest output is not intentionally retained.
+- `save_docker_image_digests(logger, error_logger, log_folder, log_date, dry_run=False, prefix="SnapBeforeWatchTower")` — uses the same configured prefix as .log/.err and runs `docker images --digests` during real `create` operations and writes the output into the same timestamp group as the logs. Dry-run skips Docker. Docker failure is nonfatal but is captured as an error/warning, and partial digest output is not intentionally retained.
+
+- `default_log_prefix()` — derives the basename of the actual resolved source or frozen executable, without its final extension, for an empty/omitted logging prefix and the default email heading.
+
+- `load_report_settings(document)` — validates optional [logging] and [report] tables, rejects unknown keys/types/NUL and multiline prefix/title values, and restricts a custom prefix to a single safe filename component. It preserves comment whitespace/newlines as decoded by TOML.
 
 - `load_app_config(path)` — loads the single TOML file and converts its settings into the runtime shape used by `run()`. It validates supported sections/keys/types, reuses `parse_older_than()`, resolves `dataset_file` relative to the TOML, validates `continue_on_missing_dataset` and `continue_on_other_failures` as booleans (both default `true` when omitted for backward compatibility), turns disabled mail into `send_mail=None`, and delegates `[mqtt]` validation to `mqtt_report.validate_config()`.
 
@@ -92,15 +96,15 @@ This map describes the current application, why each function/class exists, and 
   - `ErrorCapture.__init__()` — configures ERROR-level capture and starts with empty text.
   - `ErrorCapture.emit(record)` — ignores separator-only messages and retains only the newest bounded error text.
 
-- `build_payload(config, command, version, exc, errors, run_id, dry_run=False)` — translates the actual process outcome into the Home Assistant JSON contract. It distinguishes success/failure exit codes, preserves nonfatal logged errors as `warning=true`, adds bounded failure/stderr text, includes command/version/run/time metadata, and exposes `dry_run=true|false` for consumers.
+- `build_payload(config, command, version, exc, errors, run_id, dry_run=False, comment="")` — adds the unmodified comment as a JSON string and translates the actual process outcome into the Home Assistant JSON contract. It distinguishes success/failure exit codes, preserves nonfatal logged errors as `warning=true`, adds bounded failure/stderr text, includes command/version/run/time metadata, and exposes `dry_run=true|false` for consumers.
 
-- `publish_report(config, payload)` — starts the same Python module as a bounded child worker and passes broker settings/payload over stdin as JSON. Credentials therefore do not appear in the child command line. Worker output is not copied into application errors because it could contain broker/credential details.
+- `publish_report(config, payload)` — launches the Python module in source mode, or re-executes the application binary with the private worker switch when frozen. A subprocess timeout bounds delivery; broker settings and payload travel over stdin, keeping credentials off argv. Only a validated exception-class reason is surfaced; arbitrary worker text is excluded from logs.
 
 - `RunReporter` — context manager that observes exactly one application run and publishes at most one final MQTT status without masking the underlying result.
-  - `RunReporter.__init__(config, command, version, dry_run=False)` — records settings, creates a unique run ID, and prepares an `ErrorCapture` handler.
+  - `RunReporter.__init__(config, command, version, dry_run=False, comment="")` — records the comment and settings, creates a unique run ID, and prepares an `ErrorCapture` handler.
   - `RunReporter.__enter__()` — returns the reporter for attachment to the application's error logger.
   - `RunReporter.attach(error_logger)` — attaches current-run error capture after logging is initialized.
-  - `RunReporter.__exit__(exc_type, exc, traceback)` — detaches capture, does nothing when MQTT is disabled, otherwise builds the final payload for both real and dry-run executions, suppresses only successful reports when `[mqtt].on_success=false`, always attempts failure reports, logs sanitized MQTT failure/timeout messages, and always returns `False` so original exceptions continue propagating.
+  - `RunReporter.__exit__(exc_type, exc, traceback)` — detaches capture, does nothing when MQTT is disabled, otherwise passes the stored comment into the final payload and builds it for both real and dry-run executions, suppresses only successful reports when `[mqtt].on_success=false`, always attempts failure reports, logs sanitized MQTT failure/timeout messages, and always returns `False` so original exceptions continue propagating.
 
 - `worker()` — child-process Paho publisher. It reads its request from stdin, constructs optional username/password auth and verified TLS context, then publishes exactly one non-retained message.
 

@@ -12,7 +12,7 @@ sudo python3 SnapBeforeWatchTower.py -c config.toml
 
 | Flag | Required | Meaning |
 | --- | --- | --- |
-| `-c CONFIG` | Yes for normal operation | Path to the TOML configuration file. Relative file paths *inside* the TOML file are resolved relative to the TOML file itself. |
+| `-c CONFIG` | Yes for normal operation | Path to the TOML configuration file. A relative CONFIG path uses the current working directory. Relative dataset/TLS paths *inside* TOML use the TOML directory; dataset_file also expands ~. |
 | `-h`, `--help` | No | Show complete CLI help and exit before configuration loading or operational work. |
 | `--version` | No | Show the application version and exit before configuration loading or operational work. |
 
@@ -54,8 +54,8 @@ enabled = false
 on_success = false
 host = "mqtt.example.local"
 port = 1883
-topic = "homeassistant/SnapBeforeWatchTower/Zotac-RI531/status"
-title = "Zotac RI531 - SnapBeforeWatchTower"
+topic = "homeassistant/SnapBeforeWatchTower/example-host/status"
+title = "Example host - SnapBeforeWatchTower"
 username = "your-mqtt-user"
 password = "<String>"
 qos = 0
@@ -98,8 +98,8 @@ The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install
 | `on_success` | Default `false` | Also publishes success reports for real and dry-run executions. When false, only successful MQTT reports are suppressed; failure reports still publish. |
 | `host` | Required when enabled | MQTT broker hostname or IP address. |
 | `port` | Default `1883`, or `8883` when TLS is enabled and the key is omitted | Broker TCP port, integer 1–65535. |
-| `topic` | Required when enabled | Publish topic. `+` and `#` wildcards are rejected. It must match the Home Assistant MQTT trigger topic. |
-| `title` | Default `"SnapBeforeWatchTower"` | Human-readable run name copied to the MQTT payload fields `title`, `name`, and `job`. |
+| `topic` | Required when enabled | Nonempty publish topic without NUL, at most 65535 UTF-8 bytes. `+` and `#` wildcards are rejected. Replace `example-host` consistently here and in the Home Assistant MQTT trigger. |
+| `title` | Default `"SnapBeforeWatchTower"` | MQTT title fallback for `title`, `name`, and `job`. A nonempty `[report].title` overrides it. |
 | `username` | Optional | Broker username. Use an empty string for no username. |
 | `password` | Optional | Plain TOML password string. A non-empty password requires a non-empty username. Protect `config.toml` with restrictive permissions. |
 | `qos` | Default `0` | MQTT QoS: `0`, `1`, or `2`. Reports are always non-retained. |
@@ -109,7 +109,7 @@ The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install
 | `key_file` | Optional | Client private-key path for mutual TLS. Must be paired with `cert_file`; relative paths are TOML-relative. |
 | `timeout` | Default `15` | Total MQTT worker timeout in seconds, integer 1–120. |
 
-Unknown TOML sections and unknown keys are rejected. The retired JSON MQTT configuration and old multi-flag interface are not supported.
+Unknown TOML sections and unknown keys are rejected. All operational configuration uses the TOML file.
 
 ## Dataset file
 

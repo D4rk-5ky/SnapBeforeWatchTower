@@ -219,6 +219,34 @@ class MQTTTests(unittest.TestCase):
                     pass
             self.assertNotIn('secret', '\n'.join(logs.output))
 
+    def test_comment_newlines_survive_payload_json_and_worker_publish(self):
+        comment = 'First line\n\nSecond line\n'
+        payload = mqtt.build_payload(self.config, 'create', '0.0.16', None, '', 'run-comment', comment=comment)
+        self.assertEqual(json.loads(json.dumps(payload))['comment'], comment)
+        publish = Mock()
+        paho = types.ModuleType('paho')
+        package = types.ModuleType('paho.mqtt')
+        package.publish = publish
+        with patch.dict(sys.modules, {'paho': paho, 'paho.mqtt': package}), \
+             patch.object(sys, 'stdin', io.StringIO(json.dumps({'config': self.config, 'payload': payload}))):
+            mqtt.worker()
+        self.assertEqual(json.loads(publish.single.call_args.kwargs['payload'])['comment'], comment)
+        self.assertFalse(publish.single.call_args.kwargs['retain'])
+
+    def test_reporter_propagates_comment_for_success_and_failure(self):
+        for failure in [False, True]:
+            with self.subTest(failure=failure), patch.object(mqtt, 'publish_report') as publish:
+                reporter = mqtt.RunReporter(dict(self.config, on_success=True), 'create', '0.0.16',
+                                            dry_run=True, comment='First\nSecond')
+                if failure:
+                    with self.assertRaises(RuntimeError):
+                        with reporter:
+                            raise RuntimeError('failed')
+                else:
+                    with reporter:
+                        pass
+                self.assertEqual(publish.call_args.args[1]['comment'], 'First\nSecond')
+
 
 if __name__ == '__main__':
     unittest.main()

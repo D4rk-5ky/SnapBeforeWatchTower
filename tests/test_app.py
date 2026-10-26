@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 import uuid
 from unittest.mock import Mock, patch
@@ -38,7 +39,8 @@ def temporary_directory():
 
 
 def write_config(folder, *, command='create', dataset_file='datasets.txt', older_than='7d', retain_count=10,
-                 dry_run=False, continue_on_missing_dataset=True, continue_on_other_failures=True, mail='', mqtt=''):
+                 dry_run=False, continue_on_missing_dataset=True, continue_on_other_failures=True, mail='', mqtt='',
+                 logging_settings='', report=''):
     """Write a minimal TOML config used by parser/integration tests."""
     path = Path(folder) / 'config.toml'
     path.write_text(
@@ -72,6 +74,25 @@ class BehaviorTests(unittest.TestCase):
         for value in ['-1d', '1.5d', '7D', '7', 'garbage']:
             with self.assertRaises(argparse.ArgumentTypeError):
                 app.parse_older_than(value)
+
+    def test_shipped_example_covers_every_supported_setting_and_safe_defaults(self):
+        with (ROOT / 'config-example.toml').open('rb') as handle:
+            document = tomllib.load(handle)
+        expected = {
+            'application': {'command', 'dataset_file', 'older_than', 'retain_count', 'dry_run',
+                            'continue_on_missing_dataset', 'continue_on_other_failures'},
+            'mail': {'enabled', 'recipient', 'on_success'},
+            'mqtt': mqtt.SUPPORTED_KEYS | {'enabled'},
+            'logging': {'prefix'},
+            'report': {'title', 'name', 'comment'},
+        }
+        self.assertEqual(set(document), set(expected))
+        for section, keys in expected.items():
+            self.assertEqual(set(document[section]), keys, section)
+        args, mqtt_config = app.load_app_config(ROOT / 'config-example.toml')
+        self.assertTrue(args.dry_run)
+        self.assertIsNone(args.send_mail)
+        self.assertIsNone(mqtt_config)
 
     def test_toml_config_maps_former_flags_and_resolves_relative_dataset(self):
         with temporary_directory() as folder:
@@ -592,6 +613,7 @@ class BehaviorTests(unittest.TestCase):
             args, mqtt_config = app.load_app_config(write_config(folder))
         self.assertEqual(args.log_prefix, 'SnapBeforeWatchTower')
         self.assertEqual(args.report_title, '')
+        self.assertEqual(args.report_name, '')
         self.assertEqual(args.report_comment, '')
         self.assertIsNone(mqtt_config)
 
@@ -629,6 +651,8 @@ class BehaviorTests(unittest.TestCase):
             {'logging': {'prefix': '../escape'}}, {'logging': {'prefix': '/absolute'}},
             {'logging': {'prefix': 'back\\slash'}}, {'logging': {'prefix': 'glob*'}},
             {'logging': {'prefix': 'line\nbreak'}}, {'logging': {'prefix': 'nul\0'}},
+            {'report': {'name': 1}}, {'report': {'name': 'line\nbreak'}},
+            {'report': {'name': 'carriage\rreturn'}}, {'report': {'name': 'nul\0'}},
             {'report': {'title': 1}}, {'report': {'title': 'header\r\ninjection'}},
             {'report': {'comment': 1}}, {'report': {'comment': 'nul\0'}},
         ]
@@ -636,14 +660,16 @@ class BehaviorTests(unittest.TestCase):
             with self.subTest(document=document), self.assertRaises(ValueError):
                 app.load_report_settings(document)
         with temporary_directory() as folder:
-            config = write_config(folder, logging_settings='\n[logging]\nprefix="../escape"\n')
-            with patch.object(sys, 'argv', ['app', '-c', str(config)]), \
-                 patch.object(app, 'run') as run, patch.object(mqtt, 'publish_report') as publish:
-                with self.assertRaises(SystemExit) as failure:
-                    app.main()
-                self.assertEqual(failure.exception.code, 2)
-            run.assert_not_called()
-            publish.assert_not_called()
+            for extra in [{'logging_settings': '\n[logging]\nprefix="../escape"\n'},
+                          {'report': '\n[report]\nname="line\\nbreak"\n'}]:
+                config = write_config(folder, **extra)
+                with patch.object(sys, 'argv', ['app', '-c', str(config)]), \
+                     patch.object(app, 'run') as run, patch.object(mqtt, 'publish_report') as publish:
+                    with self.assertRaises(SystemExit) as failure:
+                        app.main()
+                    self.assertEqual(failure.exception.code, 2)
+                run.assert_not_called()
+                publish.assert_not_called()
 
     def test_custom_prefix_log_files_and_retention_keep_other_prefixes(self):
         with temporary_directory() as folder:
@@ -687,17 +713,44 @@ class BehaviorTests(unittest.TestCase):
             self.assertTrue(send.call_args.args[1].startswith('Shared title\n\n' + comment + '\n\nOutcome'))
             self.assertEqual(send.call_args.args[3], [str(logfile)])
 
+    def test_report_name_loads_without_mqtt_and_is_optional(self):
+        with temporary_directory() as folder:
+            for raw_name, expected in [('  Nightly æ backup  ', 'Nightly æ backup'), ('', ''), ('   ', '')]:
+                with self.subTest(raw_name=raw_name):
+                    config = write_config(folder, report='\n[report]\nname="' + raw_name + '"\ncomment="Details"\n')
+                    args, mqtt_config = app.load_app_config(config)
+                    self.assertEqual(args.report_name, expected)
+                    self.assertEqual(args.report_comment, 'Details')
+                    self.assertIsNone(mqtt_config)
+
+    def test_email_run_name_then_comment_and_subject_unchanged(self):
+        with temporary_directory() as folder:
+            logfile = Path(folder, 'Custom-Date-2000-01-01_00_00_00.log')
+            logfile.write_text('run logs', encoding='utf-8')
+            comment = 'First line\n\nSecond line\n'
+            for subject in ['SnapBeforeWatchTower SUCCESS - logs attached',
+                            'SnapBeforeWatchTower DRY-RUN FAILED - missing dataset']:
+                with self.subTest(subject=subject), patch.object(app, 'send_mail', return_value=(0, '')) as send:
+                    app.MailTo(self.log, self.err, 'test@example.com', folder, prefix='Custom',
+                               title='Separate MQTT title', name='Nightly backup', comment=comment,
+                               subject=subject, intro='Outcome')
+                    self.assertEqual(send.call_args.args[0], subject)
+                    body = send.call_args.args[1]
+                    self.assertTrue(body.startswith('Nightly backup\n\n' + comment + '\n\nOutcome'))
+                    self.assertNotIn('Separate MQTT title', body)
+                    self.assertEqual(send.call_args.args[3], [str(logfile)])
+
     def test_main_propagates_log_prefix_and_shared_report_in_success_and_failure(self):
         with temporary_directory() as folder:
             Path(folder, 'datasets.txt').write_text('tank/data\n', encoding='utf-8')
             config = write_config(
                 folder, dry_run=True,
                 logging_settings='\n[logging]\nprefix="Custom"\n',
-                report='\n[report]\ntitle="Shared title"\ncomment="First\\nSecond"\n',
+                report='\n[report]\ntitle="Shared title"\nname="Nightly backup"\ncomment="First\\nSecond"\n',
                 mail='\n[mail]\nenabled=true\nrecipient="test@example.com"\non_success=true\n',
                 mqtt='\n[mqtt]\nenabled=true\nhost="broker"\ntopic="test/status"\non_success=true\n',
             )
-            for scenario in ['success', 'dataset-failure', 'nonroot']:
+            for scenario in ['success', 'dataset-failure', 'missing-dataset', 'fatal', 'nonroot']:
                 with self.subTest(scenario=scenario), \
                      patch.object(sys, 'argv', ['app', '-c', str(config)]), \
                      patch.object(app.os, 'geteuid', return_value=1000 if scenario == 'nonroot' else 0, create=True), \
@@ -705,7 +758,9 @@ class BehaviorTests(unittest.TestCase):
                      patch.object(app, 'setup_logger', return_value=(self.log, self.err, str(Path(folder, 'unused.err')))) as setup, \
                      patch.object(app, 'save_docker_image_digests') as digest, \
                      patch.object(app, 'create_snapshot'), \
-                     patch.object(app, 'delete_old_snapshots', side_effect=app.CommandError(['zfs', 'list'], 1, '', 'denied') if scenario == 'dataset-failure' else None), \
+                     patch.object(app, 'delete_old_snapshots', side_effect=(app.CommandError(['zfs', 'list'], 1, '', 'denied') if scenario == 'dataset-failure'
+                           else app.CommandError(['zfs', 'list'], 1, '', 'dataset does not exist') if scenario == 'missing-dataset'
+                           else RuntimeError('unexpected failure') if scenario == 'fatal' else None)), \
                      patch.object(app, 'delete_old_files') as cleanup, \
                      patch.object(app, 'MailTo', return_value=True) as mail, \
                      patch.object(mqtt.importlib, 'import_module'), \
@@ -716,20 +771,25 @@ class BehaviorTests(unittest.TestCase):
                         with self.assertRaises(SystemExit):
                             app.main()
                     else:
-                        with self.assertRaises(app.DatasetCommandFailuresError):
+                        error = {'dataset-failure': app.DatasetCommandFailuresError,
+                                 'missing-dataset': app.MissingDatasetsError, 'fatal': RuntimeError}[scenario]
+                        with self.assertRaises(error):
                             app.main()
                     self.assertEqual(setup.call_args.kwargs['prefix'], 'Custom')
                     mail.assert_called_once()
-                    for key, expected in [('prefix', 'Custom'), ('title', 'Shared title'), ('comment', 'First\nSecond')]:
+                    for key, expected in [('prefix', 'Custom'), ('title', 'Shared title'), ('name', 'Nightly backup'), ('comment', 'First\nSecond')]:
                         self.assertEqual(mail.call_args.kwargs[key], expected)
                     publish.assert_called_once()
                     payload = publish.call_args.args[1]
                     self.assertEqual(payload['title'], 'Shared title')
+                    self.assertEqual(payload['name'], 'Nightly backup')
+                    self.assertEqual(payload['job'], 'Nightly backup')
                     self.assertEqual(payload['comment'], 'First\nSecond')
                     self.assertEqual(payload['status'], 'success' if scenario == 'success' else 'failure')
                     if scenario != 'nonroot':
                         self.assertEqual(digest.call_args.kwargs['prefix'], 'Custom')
-                        self.assertEqual(cleanup.call_args.kwargs['prefix'], 'Custom')
+                        if scenario != 'fatal':
+                            self.assertEqual(cleanup.call_args.kwargs['prefix'], 'Custom')
 
     def test_fixed_log_folder_has_no_temporary_fallback(self):
         with temporary_directory() as folder:
@@ -755,8 +815,8 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(app.default_log_prefix(), 'SnapBeforeWatchTower')
         with patch.object(app.sys, 'frozen', True, create=True), \
              patch.object(app.sys, 'executable', '/opt/jobs/CustomBinary'):
-            prefix, title, comment = app.load_report_settings({'logging': {'prefix': ''}})
-        self.assertEqual((prefix, title, comment), ('CustomBinary', '', ''))
+            prefix, title, name, comment = app.load_report_settings({'logging': {'prefix': ''}})
+        self.assertEqual((prefix, title, name, comment), ('CustomBinary', '', '', ''))
         with patch.object(app.sys, 'frozen', True, create=True), \
              patch.object(app.sys, 'executable', '/opt/jobs/Custom binary æ'):
             self.assertEqual(app.load_report_settings({})[0], 'Custom binary æ')
@@ -775,13 +835,15 @@ class CLITests(unittest.TestCase):
             self.assertIn('-c CONFIG', result.stdout)
             self.assertIn('-h, --help', result.stdout)
             self.assertIn('--version', result.stdout)
+            self.assertIn('[report].name', result.stdout)
+            self.assertIn('Neither changes mail subjects', result.stdout)
             self.assertIn('Operational settings', result.stdout)
             self.assertEqual(result.stderr, '')
 
     def test_version_exits_without_config(self):
         result = self.run_cli('--version')
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
-        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.14')
+        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.16')
         self.assertEqual(result.stderr, '')
 
     def test_config_is_required_and_retired_operational_flags_are_rejected(self):

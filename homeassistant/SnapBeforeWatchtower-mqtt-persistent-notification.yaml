@@ -16,10 +16,10 @@ actions:
         {% else %}
           unknown
         {% endif %}
-      report_title: |-
+      report_name: |-
         {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.title
-             | default(trigger.payload_json.name
+          {{ trigger.payload_json.name
+             | default(trigger.payload_json.title
              | default(trigger.payload_json.job | default('SnapBeforeWatchTower'))) }}
         {% else %}
           SnapBeforeWatchTower
@@ -69,7 +69,7 @@ actions:
             data:
               title: ✅ SnapBeforeWatchTower successful
               message: >-
-                {{ report_title }} finished successfully.
+                {{ report_name }} finished successfully.
 
                 {% if report_comment %}{{ report_comment }}{% endif %}
 
@@ -89,7 +89,7 @@ actions:
             data:
               title: ❌SnapBeforeWatchTower failed
               message: |-
-                {{ report_title }} failed.
+                {{ report_name }} failed.
                 {% if report_comment %}{{ report_comment }}{% endif %}
                 Mode: {{ 'DRY-RUN' if report_dry_run | bool else 'LIVE' }}
                 Exit code: {{ report_exit_code }}
@@ -105,7 +105,7 @@ actions:
           message: >-
             Received an MQTT status that was neither success nor failure.
 
-            Title: {{ report_title }} Topic: {{ trigger.topic }} Raw payload: {{
+            Name: {{ report_name }} Topic: {{ trigger.topic }} Raw payload: {{
             trigger.payload | default('No payload') }}
           data:
             priority: 0

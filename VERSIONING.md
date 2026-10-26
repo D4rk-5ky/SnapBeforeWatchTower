@@ -1,8 +1,61 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.14. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.16. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.16 — 2026-10-26
+
+### Run name in report metadata and email body
+
+- Increment 0.0.15 to 0.0.16, exactly one patch step.
+- Add optional `[report].name` using the existing lowercase report table. Names must be single-line strings without NUL; strip surrounding whitespace. Empty/omitted names preserve the prior mail/MQTT fallbacks. Comment content remains unmodified after TOML decoding.
+- Extend `load_report_settings()` to validate `name` using the existing report-field validation and return `(prefix, title, name, comment)`. Extend `load_app_config()` with `args.report_name` independently of title/comment and without requiring MQTT.
+- Pass the name from `main()` into `RunReporter`, and from `run()` into every existing mail call: success, non-root refusal, missing datasets, aggregate list/destroy failures, and fatal errors.
+- Append optional `name` parameters to `MailTo()`, `build_payload()`, and `RunReporter.__init__()` so existing positional parameters retain their meaning.
+- `MailTo()` puts the name at the beginning of the email body, followed by the existing comment and then outcome/logs. A missing name uses the existing title/basename heading. Preserve the success/failure email subject; neither name nor comment is added to it.
+- `RunReporter` stores and forwards the name; `build_payload()` uses it for MQTT `name` and `job`, falling back to MQTT title if empty. MQTT `title` remains independently controlled by `[report].title`/`[mqtt].title`; comment remains its own JSON field.
+- Extend `--help` to describe `[report].name`, comment placement, title fallback, and unchanged email subjects. Public flags remain `-c`, `-h`/`--help`, and `--version`.
+- Update the Home Assistant example to display payload `name` before comment, with legacy `title`/`job` fallbacks. Keep MQTT topic, success/failure branching, dry-run display, and notification actions intact.
+- Preserve all snapshot naming, retention, dataset processing, root enforcement, dry-run safety, failure continuation, notification-selection rules, worker credential isolation, timeout, TLS and transport behavior. No new operational commands are added.
+
+### Tests, documentation and delivery
+
+- Add four tests: optional/trimmed/Unicode name loading with MQTT disabled; actual email-body order with unchanged subjects and attachments; name/title independence and MQTT legacy fallback; reporter name propagation for live/dry-run success/failure.
+- Extend the existing combined coordinator test to cover all five mail outcomes with distinct title/name/comment. Extend invalid-field tests to reject name type/newline/CR/NUL errors before operations, shipped-example coverage to include `name`, CLI-help assertions, JSON/worker name round-trip checks, and legacy empty-name defaults.
+- Update CLI and MQTT version fixtures to 0.0.16. All 67 offline tests pass. Run Python/spec compile checks, shell syntax checks, and source/frozen CLI/private-worker smoke checks.
+- Complete loadable/readable configuration examples and README usage with all 28 options, email layout, independent MQTT title, fallbacks and lowercase TOML spelling. Keep README focused on current usage and preserve the requested disclaimer verbatim.
+- Update `commented_code_map.md` for every changed function signature, return shape, metadata path, new/expanded test, and Home Assistant name fallback.
+- Keep this file and lowercase `versioning.md` identical. Update `VERIFICATION.md`, `dist/README.md`, `PACKAGE_MANIFEST.md`, and the per-file checksum manifest.
+- Rebuild the existing Linux x86_64 executable with the unchanged pinned build script/spec; `--version` reports 0.0.16. Preserve all 25 previous-release paths and all 23 original-archive paths. No project file is added or removed in this release.
+- Deliver a clean full-project ZIP, excluding build environments/work/cache, logs, Python bytecode, and temporary files. Verify CRC, exact paths, executable modes, hashes and tests again from fresh extraction. Live ZFS/Docker/mail/MQTT/Home Assistant integration and cross-platform binary compatibility remain untested.
+
+## 0.0.15 — 2026-10-26
+
+### Code and test changes
+
+- Advance the application from 0.0.14 to 0.0.15 (one patch step, with the existing 99-to-next-minor rollover rule retained).
+- Fix the aggregate `DatasetCommandFailuresError` failure-mail branch in `run()` to forward `log_prefix`, `report_title`, and `report_comment` to the existing `MailTo()` helper. This selects the configured job's attachments and preserves its heading/multiline comment on that failure path.
+- Align the existing mail-call keyword indentation without changing other mail behavior.
+- Remove only the incomplete `pick_log_folder()` definition immediately overwritten by the active definition. Retain the active fixed-directory helper, its compatibility parameter, and every original active function/class. Correct the stale run comment about a temporary fallback.
+- Correct CLI help to describe the existing frozen `dist/` parent-project log location and no-fallback policy. Keep `-c`, `-h`/`--help`, and `--version` as the public interface.
+- Repair the existing test `write_config()` helper by declaring optional `logging_settings` and `report` parameters; previously its undefined variables/unrecognized keywords caused 13 baseline errors across 62 discovered tests.
+- Update all MQTT test version samples (including inconsistent 0.0.16 samples) and CLI version assertions to 0.0.15.
+- Add `test_shipped_example_covers_every_supported_setting_and_safe_defaults()` and its `tomllib` import. The full 63-test offline suite passes, including the existing combined success/failure/root-refusal metadata regression.
+- Preserve snapshot naming/selection, age/count retention, dry-run mutation suppression, root enforcement, continuation/final-failure rules, and notification selection. `mqtt_report.py` remains byte-for-byte unchanged.
+
+### Documentation and release files
+
+- Complete `config-example.toml` and `config.example.md` with `[logging].prefix`, `[report].title`, and `[report].comment`; document all 27 options across five sections, fallback/precedence, validation, and TOML newline rules.
+- Update README usage for these settings, actual log locations, all commands, config permissions, MQTT comment payload, email selection, Docker launch failures, and retained host-specific dataset lists. Keep release history out of README.
+- Expand `commented_code_map.md` to cover every application/test function and method, private/frozen workers, build/shell/spec commands, all supporting files, and their purpose. Remove descriptions of nonexistent fallback/probe logic.
+- Preserve the requested disclaimer block verbatim in README and the unchanged `SAFETY.md`.
+- Keep this complete uppercase history and add an identical lowercase `versioning.md` compatibility copy, satisfying both requested spellings without removing the original file. Verify the copies remain identical.
+- Rebuild `dist/SnapBeforeWatchTower` with the unchanged pinned PyInstaller/Paho recipe; the executable now reports 0.0.15. Build host: Linux x86_64, Python 3.14.4, glibc 2.43. Compatibility with other hosts is not certified.
+- Update `dist/README.md` with binary version/platform and target-build guidance; replace stale `VERIFICATION.md` with measured results and limits.
+- Add `PACKAGE_MANIFEST.md`, comparing every original path/content against the final project; regenerate `manifest.sha256` from actual delivered files because the supplied manifest was stale.
+- Preserve all 23 original file paths, including both host-specific dataset lists and the rebuilt executable. Add only `PACKAGE_MANIFEST.md` and `versioning.md` (25 delivered files total).
+- Package the complete project into a clean ZIP with executable permissions; exclude Python bytecode, caches, generated build work, virtual environments, logs, and temporary files. Verify CRCs, exact file paths, hashes, original-path preservation, and a fresh extraction.
 
 ## 0.0.14 — 2026-10-02
 

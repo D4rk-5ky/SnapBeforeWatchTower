@@ -73,7 +73,7 @@ port = 1883
 topic = "homeassistant/SnapBeforeWatchTower/example-host/status"
 
 # MQTT-only title fallback (default: SnapBeforeWatchTower). A nonempty [report].title
-# overrides this value and supplies the shared email/MQTT heading.
+# overrides this value. [report].name separately selects the run name and email body heading.
 title = "Example host - SnapBeforeWatchTower"
 
 # Optional MQTT username. Use an empty string for no username authentication.
@@ -103,3 +103,28 @@ key_file = ""
 
 # Total MQTT worker timeout in seconds. Valid integer range: 1 through 120.
 timeout = 15
+
+[logging]
+# Optional prefix shared by .log/.err/.digest names and email attachment lookup.
+# Empty/omitted uses the actual source/executable basename without its final extension.
+# A custom value must start with an ASCII letter/digit and contain only letters,
+# digits, dots, underscores, or hyphens. Snapshot names are unaffected.
+prefix = ""
+
+[report]
+# Optional single-line MQTT title override. Empty/omitted uses [mqtt].title.
+# Also the fallback email body heading when name is empty. Does not change mail subjects.
+title = ""
+
+# Optional run name: email body heading and MQTT JSON name/job fields.
+# This is separate from the mail subject and MQTT title. Surrounding whitespace
+# is stripped; multiline values and NUL are rejected. Empty/omitted retains
+# the existing title/basename fallback for mail and MQTT-title fallback for MQTT.
+name = "Nightly Docker snapshots"
+
+# Optional text directly below the run name in the email body, before outcome/logs.
+# Also sent as the MQTT JSON comment field. Never added to the email subject.
+# Basic TOML strings decode \n as a newline; literal single-quoted strings do not.
+# Multiline basic/literal TOML strings are also supported. Whitespace/newlines
+# are preserved; NUL is rejected. Example: comment = "Before Watchtower updates."
+comment = ""

@@ -64,6 +64,14 @@ ca_file = ""
 cert_file = ""
 key_file = ""
 timeout = 15
+
+[logging]
+prefix = ""
+
+[report]
+title = ""
+name = "Nightly Docker snapshots"
+comment = ""
 ```
 
 ## `[application]`
@@ -77,6 +85,37 @@ timeout = 15
 | `dry_run` | Yes | When `true`, preview snapshot creation/destruction and old-log deletion. Snapshot listing and logging still occur and Docker digest capture is skipped. Mail/MQTT reporting follows the normal policy: failures report when the channel is enabled; successful dry-runs require that channel's `on_success=true`. |
 | `continue_on_missing_dataset` | Default `true` | When ZFS explicitly reports a configured dataset as nonexistent, `true` records the failure and continues with the next configured dataset; `false` stops immediately. Either way, the final run is failure and enabled mail/MQTT reports it. |
 | `continue_on_other_failures` | Default `true` | For any other checked per-dataset `zfs list` or `zfs destroy` failure, `true` records the failure and continues with the next configured dataset; `false` stops immediately. It does not make global/config/root/input or unrelated snapshot-create failures recoverable. |
+
+## `[logging]` and `[report]` — optional
+
+```toml
+[logging]
+prefix = ""
+
+[report]
+title = ""
+name = "Nightly Docker snapshots"
+comment = ""
+```
+
+| Setting | Default and usage |
+| --- | --- |
+| `[logging].prefix` | Empty/omitted uses the actual resolved script/executable basename without its final extension. A custom prefix must start with an ASCII letter/digit and use only letters, digits, dots, underscores, and hyphens. It selects `.log`, `.err`, `.digest`, log retention, and email attachment names; snapshot names remain fixed. |
+| `[report].title` | Optional MQTT title override; empty/omitted uses `[mqtt].title`. Also the email body heading fallback when `name` is empty (then app basename if title is also empty). Must be a single-line string without NUL; surrounding whitespace is stripped. Does not change the email subject. |
+| `[report].name` | Optional run name used as the email body heading and MQTT `name`/`job` fields. Single-line string without NUL; surrounding whitespace is stripped. Empty/omitted preserves the email title/basename fallback and MQTT title fallback. Separate from MQTT `title` and the email subject. |
+| `[report].comment` | Default empty. Placed directly below the run name in the email body, before the outcome and logs, and sent as the MQTT JSON `comment` string. Never added to the email subject. Whitespace/newlines are preserved; NUL is rejected. Basic TOML strings decode `\n`, while literal single-quoted strings preserve it. Multiline basic/literal strings are accepted. |
+
+Use these report settings to identify a job:
+
+```toml
+[report]
+name = "Nightly Docker snapshots"
+comment = "Before Watchtower updates."
+```
+
+The email body starts with the name, a blank line, then the comment. The normal success/failure subject stays unchanged. MQTT includes `"name": "Nightly Docker snapshots"`, the same `job` value, and `"comment": "Before Watchtower updates."`; its `title` keeps its independently configured value. Use lowercase `[report]`: TOML section/key names are case-sensitive.
+
+For example, `comment = "First line\nSecond line"` creates two lines in both reports. Unknown sections/keys are rejected. Prefix/title/name must be single-line strings; an empty custom prefix uses the basename fallback.
 
 ## `[mail]` — optional
 
@@ -99,7 +138,7 @@ The whole `[mqtt]` table may be omitted; MQTT then defaults to disabled. Install
 | `host` | Required when enabled | MQTT broker hostname or IP address. |
 | `port` | Default `1883`, or `8883` when TLS is enabled and the key is omitted | Broker TCP port, integer 1–65535. |
 | `topic` | Required when enabled | Nonempty publish topic without NUL, at most 65535 UTF-8 bytes. `+` and `#` wildcards are rejected. Replace `example-host` consistently here and in the Home Assistant MQTT trigger. |
-| `title` | Default `"SnapBeforeWatchTower"` | MQTT title fallback for `title`, `name`, and `job`. A nonempty `[report].title` overrides it. |
+| `title` | Default `"SnapBeforeWatchTower"` | MQTT title default, overridden by nonempty `[report].title`. Used for `name`/`job` only when `[report].name` is empty. |
 | `username` | Optional | Broker username. Use an empty string for no username. |
 | `password` | Optional | Plain TOML password string. A non-empty password requires a non-empty username. Protect `config.toml` with restrictive permissions. |
 | `qos` | Default `0` | MQTT QoS: `0`, `1`, or `2`. Reports are always non-retained. |

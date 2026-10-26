@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 from mqtt_report import RunReporter, validate_config as validate_mqtt_config, worker as mqtt_worker
 
-__version__ = "0.0.14"
+__version__ = "0.0.16"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -127,15 +127,6 @@ def runtime_base_dir() -> str:
             return str(executable_dir.parent)
         return str(executable_dir)
     return os.path.dirname(os.path.abspath(__file__))
-
-
-def pick_log_folder(script_log_folder: str, tmp_name: str = "SnapBeforeWatchTower") -> str:
-    """
-    Policy:
-      - If NOT root: always use /tmp/<tmp_name>
-      - If root: try <script>/logs; if not writable, fall back to /tmp/<tmp_name>
-    """
-    tmp_folder = os.path.join(tempfile.gettempdir(), tmp_name)
 
 
 def pick_log_folder(script_log_folder: str, tmp_name: str = "SnapBeforeWatchTower") -> str:
@@ -333,7 +324,9 @@ def MailTo(
     prefix="SnapBeforeWatchTower",
     title="",
     comment="",
+    name="",
 ):
+    """Put the run name and comment in the body; keep the caller's subject intact."""
     print_separator(logger)
     logger.info("Preparing email report...")
 
@@ -342,8 +335,9 @@ def MailTo(
     attachment_files = []
     body = ""
 
-    if title:
-        body += title + "\n\n"
+    heading = name or title
+    if heading:
+        body += heading + "\n\n"
     if comment:
         body += comment + "\n\n"
 
@@ -670,7 +664,7 @@ def default_log_prefix() -> str:
 def load_report_settings(document):
     """Validate optional logging/report tables; preserve TOML-decoded comment newlines."""
     values = {}
-    for section, keys in [('logging', {'prefix'}), ('report', {'title', 'comment'})]:
+    for section, keys in [('logging', {'prefix'}), ('report', {'title', 'name', 'comment'})]:
         table = document.get(section, {})
         if not isinstance(table, dict):
             raise ValueError(f'[{section}] must be a TOML table')
@@ -691,7 +685,7 @@ def load_report_settings(document):
     # prevents generated files and email lookup from escaping their log folder.
     if values['prefix'] and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', prefix):
         raise ValueError('[logging].prefix must start with a letter/digit and contain only letters, digits, dots, underscores or hyphens')
-    return prefix, values['title'], values['comment']
+    return prefix, values['title'], values['name'], values['comment']
 
 
 def load_app_config(path):
@@ -708,7 +702,7 @@ def load_app_config(path):
         names = ', '.join(sorted(unknown_sections))
         raise ValueError(f'unsupported configuration section(s): {names}')
 
-    log_prefix, report_title, report_comment = load_report_settings(document)
+    log_prefix, report_title, report_name, report_comment = load_report_settings(document)
 
     application = document.get('application')
     if not isinstance(application, dict):
@@ -814,6 +808,7 @@ def load_app_config(path):
         config_path=str(config_path),
         log_prefix=log_prefix,
         report_title=report_title,
+        report_name=report_name,
         report_comment=report_comment,
     )
     return args, mqtt_config
@@ -847,11 +842,14 @@ def main():
             '                command="delete" only applies snapshot and log retention.\n'
             '  dataset_file, older_than, retain_count, dry_run, and continuation policies\n'
             '  are application settings. [mail] and [mqtt] configure notifications.\n'
-            '  [logging].prefix names log files. [report].title/comment customize reports;\n'
+            '  [logging].prefix names log files. [report].name sets the run name in MQTT\n'
+            '  and the email body; comment follows the name. Neither changes mail subjects.\n'
+            '  [report].title sets the MQTT title and fallback email heading;\n'
             '  comment accepts TOML \\n escapes and multiline strings.\n\n'
             'Runtime requires Linux and root, including dry-run. Dry-run still lists ZFS\n'
             'snapshots, writes logs, and can send enabled mail/MQTT notifications.\n'
-            'Logs always use logs/ beside the actual script/executable; no fallback.\n'
+            'Logs use application-local logs/ with no fallback; a binary in dist/\n'
+            'uses its parent project logs/ to keep dist/ clean.\n'
             'File paths inside TOML are relative to that configuration file.\n'
             'See config-example.toml for every setting and README.md for full usage.'
         ),
@@ -863,7 +861,7 @@ def main():
         args, mqtt_config = load_app_config(cli.c)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         parser.error(f'Cannot load configuration: {exc}')
-    with RunReporter(mqtt_config, args.command, __version__, dry_run=args.dry_run, comment=args.report_comment) as reporter:
+    with RunReporter(mqtt_config, args.command, __version__, dry_run=args.dry_run, comment=args.report_comment, name=args.report_name) as reporter:
         run(args, reporter)
 
 
@@ -874,11 +872,12 @@ def run(args, reporter):
     dry_run = args.dry_run
     log_prefix = getattr(args, "log_prefix", default_log_prefix())
     report_title = getattr(args, "report_title", "") or default_log_prefix()
+    report_name = getattr(args, "report_name", "")
     report_comment = getattr(args, "report_comment", "")
     report_prefix = "SnapBeforeWatchTower DRY-RUN" if dry_run else "SnapBeforeWatchTower"
 
     log_date = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
-    # Pick log folder: root-only folder if root, otherwise /tmp fallback
+    # Use the fixed application-local log folder; propagate failure without fallback.
     # In a PyInstaller one-file build, __file__ points into the temporary bundle
     # extraction directory. runtime_base_dir() keeps build output clean by using
     # the project root when the frozen executable lives in dist/, while preserving
@@ -917,7 +916,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
-                prefix=log_prefix, title=report_title, comment=report_comment,
+                    prefix=log_prefix, title=report_title, comment=report_comment, name=report_name,
                     subject=f"{report_prefix} FAILED - not run as root",
                     intro=msg,
                 )
@@ -1032,6 +1031,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
+                    prefix=log_prefix, title=report_title, comment=report_comment, name=report_name,
                     subject=f"{report_prefix} FAILED - dataset command failure",
                     intro=(
                         ("SnapBeforeWatchTower dry-run continued past configured per-dataset ZFS command failures, but the run " if dry_run
@@ -1054,7 +1054,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
-                prefix=log_prefix, title=report_title, comment=report_comment,
+                    prefix=log_prefix, title=report_title, comment=report_comment, name=report_name,
                     subject=f"{report_prefix} FAILED - missing dataset",
                     intro=(
                         (
@@ -1084,7 +1084,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
-                prefix=log_prefix, title=report_title, comment=report_comment,
+                    prefix=log_prefix, title=report_title, comment=report_comment, name=report_name,
                     subject=f"{report_prefix} FAILED - logs attached",
                     intro=("SnapBeforeWatchTower dry-run failed. See attached logs." if dry_run else "SnapBeforeWatchTower failed. See attached logs."),
                 )
@@ -1105,7 +1105,7 @@ def run(args, reporter):
                     error_logger,
                     recipient=args.send_mail,
                     log_folder=log_folder,
-                prefix=log_prefix, title=report_title, comment=report_comment,
+                    prefix=log_prefix, title=report_title, comment=report_comment, name=report_name,
                     subject=f"{report_prefix} SUCCESS - logs attached",
                     intro=("SnapBeforeWatchTower dry-run completed successfully. Logs attached." if dry_run else "SnapBeforeWatchTower completed successfully. Logs attached."),
                 )

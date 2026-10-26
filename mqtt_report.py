@@ -110,7 +110,7 @@ class ErrorCapture(logging.Handler):
             self.text = (self.text + '\n' + message).strip()[-4096:]
 
 
-def build_payload(config, command, version, exc, errors, run_id, dry_run=False, comment=""):
+def build_payload(config, command, version, exc, errors, run_id, dry_run=False, comment="", name=""):
     """Describe the actual process outcome, retaining nonfatal errors as warnings."""
     code = 0
     if isinstance(exc, SystemExit):
@@ -132,8 +132,8 @@ def build_payload(config, command, version, exc, errors, run_id, dry_run=False, 
     return {
         'status': 'failure' if failure else 'success',
         'title': config['title'],
-        'name': config['title'],
-        'job': config['title'],
+        'name': name or config['title'],
+        'job': name or config['title'],
         'comment': comment,
         'exit_code': code,
         'warning': bool(errors) and not failure,
@@ -172,12 +172,13 @@ def publish_report(config, payload):
 class RunReporter:
     """Publish one final outcome without changing existing operations or exit behavior."""
 
-    def __init__(self, config, command, version, dry_run=False, comment=""):
+    def __init__(self, config, command, version, dry_run=False, comment="", name=""):
         self.config = config
         self.command = command
         self.version = version
         self.dry_run = dry_run
         self.comment = comment
+        self.name = name
         self.run_id = str(uuid.uuid4())
         self.errors = ErrorCapture()
         self.error_logger = None
@@ -197,7 +198,7 @@ class RunReporter:
         logger = logging.getLogger('SnapBeforeWatchTower')
         try:
             payload = build_payload(
-                self.config, self.command, self.version, exc, self.errors.text, self.run_id, dry_run=self.dry_run, comment=self.comment
+                self.config, self.command, self.version, exc, self.errors.text, self.run_id, dry_run=self.dry_run, comment=self.comment, name=self.name
             )
             if payload['status'] == 'success' and not self.config['on_success']:
                 logger.info('%sMQTT success report suppressed because on_success=false', '[DRY-RUN] ' if self.dry_run else '')

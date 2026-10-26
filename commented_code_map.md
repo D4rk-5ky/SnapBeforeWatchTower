@@ -21,8 +21,7 @@ This map describes the current application, why each function/class exists, and 
 
 - `runtime_base_dir()` — returns the persistent application directory. Source mode uses the directory containing `SnapBeforeWatchTower.py`. A frozen executable inside a project `dist/` uses the project directory so runtime logs do not create `dist/logs/`; a frozen executable deployed elsewhere uses the directory containing `sys.executable`.
 
-- `pick_log_folder(script_log_folder, tmp_name="SnapBeforeWatchTower")` — implements the active log-location policy. Non-root always uses a temporary directory. Root first tests whether the source/frozen application-local log directory is writable, then falls back to temporary storage if necessary.
-  - nested `_ensure_writable(path)` — safely probes a directory by creating/removing a small `.write_test` file; failure returns `False` instead of aborting the run.
+- `pick_log_folder(script_log_folder, tmp_name="SnapBeforeWatchTower")` — creates and returns the fixed application-local log directory, regardless of UID. Directory-creation failure propagates before external operations. `tmp_name` is retained as an unused compatibility parameter. There is no fallback or nested probe.
 
 - `CommandError(RuntimeError)` — structured exception for failed external commands run through `run_cmd()`. It retains the command, return code, stdout, and stderr so the real failure propagates without silently continuing destructive logic.
   - `CommandError.__init__(cmd, returncode, stdout, stderr)` — stores command-result details and creates a concise exception message.
@@ -49,7 +48,7 @@ This map describes the current application, why each function/class exists, and 
 
 - `send_mail(subject, body, recipient, attachment_files=None)` — invokes the local `mail` program, placing all options before the recipient for compatibility with common mail/mailx implementations. It returns the mail process exit code and stderr instead of hiding delivery failure.
 
-- `MailTo(logger, error_logger, recipient, log_folder, subject=..., intro=..., prefix=..., title="", comment="")` — places the optional shared heading and unmodified multiline comment at the top, then builds the email body from the newest error log (included only if non-empty) and newest main log, attaches available logs, sends the message, then delegates result logging to `WasMailSent()`.
+- `MailTo(logger, error_logger, recipient, log_folder, subject=..., intro=..., prefix=..., title="", comment="", name="")` — uses `name` as the email body heading, falling back to `title` for older callers, and places the unmodified multiline comment immediately below it. It preserves the caller's subject, then builds the email body from the newest error log (included only if non-empty) and newest main log, attaches available logs, sends the message, then delegates result logging to `WasMailSent()`.
 
 - `WasMailSent(logger, error_logger, MailExitCode, popenstderr)` — writes a clear success/failure result for the local mail command without changing the underlying snapshot result.
 
@@ -57,7 +56,7 @@ This map describes the current application, why each function/class exists, and 
 
 - `create_snapshot(logger, error_logger, dataset, dry_run=False)` — creates one timestamped managed snapshot for one dataset. In dry-run it only reports what would be created. Real ZFS failures are logged and re-raised so later logic cannot treat a failed creation as success.
 
-- `extract_snapshot_date(snapshot_name)` — retained original timestamp parser for a managed snapshot-name fragment. The active retention implementation performs its own regex parse because it needs the complete snapshot match.
+- `extract_snapshot_date(snapshot_name)` — retained original timestamp parser expecting `DateYYYY...` without the newer hyphen; it is unused by active retention. The active retention implementation performs its own regex parse because it needs the complete snapshot match.
 
 - `is_older_than(logger, error_logger, snapshot_date_str, older_than)` — retained original age helper. A malformed timestamp logs an error and returns `False`, which is the safe no-delete outcome.
 
@@ -71,16 +70,17 @@ This map describes the current application, why each function/class exists, and 
 
 - `default_log_prefix()` — derives the basename of the actual resolved source or frozen executable, without its final extension, for an empty/omitted logging prefix and the default email heading.
 
-- `load_report_settings(document)` — validates optional [logging] and [report] tables, rejects unknown keys/types/NUL and multiline prefix/title values, and restricts a custom prefix to a single safe filename component. It preserves comment whitespace/newlines as decoded by TOML.
+- `load_report_settings(document)` — validates optional [logging] and [report] tables, rejects unknown keys/types/NUL and multiline prefix/title/name values, and restricts a custom prefix to a single safe filename component. It strips surrounding name/title whitespace, preserves comment whitespace/newlines as decoded by TOML, and returns `(prefix, title, name, comment)` for the loader.
 
-- `load_app_config(path)` — loads the single TOML file and converts its settings into the runtime shape used by `run()`. It validates supported sections/keys/types, reuses `parse_older_than()`, resolves `dataset_file` relative to the TOML, validates `continue_on_missing_dataset` and `continue_on_other_failures` as booleans (both default `true` when omitted for backward compatibility), turns disabled mail into `send_mail=None`, and delegates `[mqtt]` validation to `mqtt_report.validate_config()`.
+- `load_app_config(path)` — loads the single TOML file and converts its settings into the runtime shape used by `run()`. It maps optional `[report].name` to `args.report_name` independently of title/comment and validates supported sections/keys/types, reuses `parse_older_than()`, resolves `dataset_file` relative to the TOML, validates `continue_on_missing_dataset` and `continue_on_other_failures` as booleans (both default `true` when omitted for backward compatibility), turns disabled mail into `send_mail=None`, and delegates `[mqtt]` validation to `mqtt_report.validate_config()`.
 
-- `main()` — first recognizes the private `--mqtt-publish-worker` switch **only when frozen by PyInstaller**, allowing the standalone executable to act as its own bounded MQTT worker without exposing credentials on argv. Otherwise it builds the public CLI: `-c CONFIG` remains required for normal operation, standard `-h`/`--help` prints all public flags, and `--version` prints `__version__`; both informational flags exit before TOML loading or operations. Retired operational CLI flags remain rejected. After normal parsing it loads TOML, creates the optional MQTT `RunReporter`, and enters the operation flow.
+- `main()` — first recognizes the private `--mqtt-publish-worker` switch **only when frozen by PyInstaller**, allowing the standalone executable to act as its own bounded MQTT worker without exposing credentials on argv. Otherwise it builds the public CLI: `-c CONFIG` remains required for normal operation, standard `-h`/`--help` prints all public flags, and `--version` prints `__version__`; both informational flags exit before TOML loading or operations. Retired operational CLI flags remain rejected. After normal parsing it loads TOML, creates the optional MQTT `RunReporter` with the run name/comment, and enters the operation flow.
 
-- `run(args, reporter)` — active operation coordinator. It chooses logging, attaches the MQTT error observer, enforces root before dataset/Docker/ZFS operations, reads datasets, and executes create/delete behavior in file order. Missing-dataset errors are handled by `continue_on_missing_dataset`; other checked per-dataset `zfs list`/`zfs destroy` failures are handled by `continue_on_other_failures`. A `true` policy records the failure and moves to the next dataset, then raises an aggregate final failure after normal remaining processing/log cleanup; a `false` policy stops immediately. Snapshot-create failures that are not explicit missing-dataset errors and global/config/root/input failures remain immediately fatal. Mail failure reports are sent whenever mail is enabled; mail success reports require `[mail].on_success=true`. The same policy applies in dry-run, whose mail subjects/intro are explicitly marked as dry-run. Empty-current-`.err` cleanup remains unchanged.
+- `run(args, reporter)` — active operation coordinator. It chooses logging, attaches the MQTT error observer, enforces root before dataset/Docker/ZFS operations, reads datasets, and executes create/delete behavior in file order. Missing-dataset errors are handled by `continue_on_missing_dataset`; other checked per-dataset `zfs list`/`zfs destroy` failures are handled by `continue_on_other_failures`. A `true` policy records the failure and moves to the next dataset, then raises an aggregate final failure after normal remaining processing/log cleanup; a `false` policy stops immediately. Snapshot-create failures that are not explicit missing-dataset errors and global/config/root/input failures remain immediately fatal. Every mail path forwards the configured log prefix, run name, fallback heading, and multiline comment, including aggregate list/destroy failures. Mail failure reports are sent whenever mail is enabled; mail success reports require `[mail].on_success=true`. The same policy applies in dry-run, whose mail subjects/intro are explicitly marked as dry-run. Empty-current-`.err` cleanup remains unchanged.
 
 ## `mqtt_report.py`
 
+- `MQTTPublishError.__init__(reason)` — retains a nonempty reason string and builds a credential-free parent exception message.
 - `MQTTPublishError` — parent-side MQTT worker failure type carrying only a sanitized exception-class reason; it deliberately excludes worker exception text and credentials.
 ### Constants
 
@@ -96,15 +96,15 @@ This map describes the current application, why each function/class exists, and 
   - `ErrorCapture.__init__()` — configures ERROR-level capture and starts with empty text.
   - `ErrorCapture.emit(record)` — ignores separator-only messages and retains only the newest bounded error text.
 
-- `build_payload(config, command, version, exc, errors, run_id, dry_run=False, comment="")` — adds the unmodified comment as a JSON string and translates the actual process outcome into the Home Assistant JSON contract. It distinguishes success/failure exit codes, preserves nonfatal logged errors as `warning=true`, adds bounded failure/stderr text, includes command/version/run/time metadata, and exposes `dry_run=true|false` for consumers.
+- `build_payload(config, command, version, exc, errors, run_id, dry_run=False, comment="", name="")` — assigns the run name to MQTT `name`/`job` (falls back to MQTT title if empty), keeps `title` separate, adds the unmodified comment as a JSON string and translates the actual process outcome into the Home Assistant JSON contract. It distinguishes success/failure exit codes, preserves nonfatal logged errors as `warning=true`, adds bounded failure/stderr text, includes command/version/run/time metadata, and exposes `dry_run=true|false` for consumers.
 
 - `publish_report(config, payload)` — launches the Python module in source mode, or re-executes the application binary with the private worker switch when frozen. A subprocess timeout bounds delivery; broker settings and payload travel over stdin, keeping credentials off argv. Only a validated exception-class reason is surfaced; arbitrary worker text is excluded from logs.
 
 - `RunReporter` — context manager that observes exactly one application run and publishes at most one final MQTT status without masking the underlying result.
-  - `RunReporter.__init__(config, command, version, dry_run=False, comment="")` — records the comment and settings, creates a unique run ID, and prepares an `ErrorCapture` handler.
+  - `RunReporter.__init__(config, command, version, dry_run=False, comment="", name="")` — records the name, comment and settings, creates a unique run ID, and prepares an `ErrorCapture` handler.
   - `RunReporter.__enter__()` — returns the reporter for attachment to the application's error logger.
   - `RunReporter.attach(error_logger)` — attaches current-run error capture after logging is initialized.
-  - `RunReporter.__exit__(exc_type, exc, traceback)` — detaches capture, does nothing when MQTT is disabled, otherwise passes the stored comment into the final payload and builds it for both real and dry-run executions, suppresses only successful reports when `[mqtt].on_success=false`, always attempts failure reports, logs sanitized MQTT failure/timeout messages, and always returns `False` so original exceptions continue propagating.
+  - `RunReporter.__exit__(exc_type, exc, traceback)` — detaches capture, does nothing when MQTT is disabled, otherwise passes the stored name/comment into the final payload and builds it for both real and dry-run executions, suppresses only successful reports when `[mqtt].on_success=false`, always attempts failure reports, logs sanitized MQTT failure/timeout messages, and always returns `False` so original exceptions continue propagating.
 
 - `worker()` — child-process Paho publisher. It reads its request from stdin, constructs optional username/password auth and verified TLS context, then publishes exactly one non-retained message.
 
@@ -122,7 +122,7 @@ This map describes the current application, why each function/class exists, and 
 ## `tests/test_app.py`
 
 - `temporary_directory()` — disposable filesystem fixture with cleanup for portable tests.
-- `write_config(...)` — creates minimal TOML configurations so integration tests exercise the real loader instead of fabricating argparse namespaces.
+- `write_config(..., logging_settings="", report="")` — accepts optional logging/report fragments and creates minimal TOML configurations so integration tests exercise the real loader instead of fabricating argparse namespaces.
 - `BehaviorTests` — regression suite for configuration mapping plus original safety/retention/mail/Docker/run-order behavior.
   - `setUp()` — creates mock loggers.
   - `test_duration_units_and_invalid_input()` — verifies accepted/rejected age syntax.
@@ -186,7 +186,7 @@ This map describes the current application, why each function/class exists, and 
 
 ## Configuration and integration files
 
-- `config-example.toml` — loadable, fully commented example containing every supported `[application]`, `[mail]`, and `[mqtt]` setting. It defaults to dry-run with mail and MQTT disabled for a safer first copy.
+- `config-example.toml` — loadable, fully commented example containing every supported `[application]`, `[mail]`, `[mqtt]`, `[logging]`, and `[report]` setting. It defaults to dry-run with mail and MQTT disabled for a safer first copy.
 - `config.example.md` — supplemental human-readable reference for the current TOML-driven interface. It documents `-c CONFIG`, `-h`/`--help`, `--version`, and every supported TOML setting, but is never parsed by the application.
 - `datasets.example.txt` — minimal two-line example of the dataset-list format consumed by `dataset_file`.
 - `requirements-mqtt.txt` — optional Paho MQTT dependency list required whenever `[mqtt].enabled=true`, including dry-run because failures still publish.
@@ -194,6 +194,44 @@ This map describes the current application, why each function/class exists, and 
 - `SnapBeforeWatchTower.spec` — one-file PyInstaller recipe; `collect_submodules('paho')` ensures all MQTT modules are bundled even though the application validates/imports Paho dynamically.
 - `build-pyinstaller.sh` — reproducible build entry point. It recreates one gitignored `.build-pyinstaller/` workspace containing `venv/`, `pip-cache/`, PyInstaller `work/`, and PyInstaller `config/`; removes legacy root-level `build/` and `.venv-build/` locations; cleans every generated/stale `dist/` entry except the tracked `dist/README.md`; builds the one-file executable with explicit `--workpath`/`--distpath`; checks `--help`/`--version`; and fails unless `dist/` contains exactly `SnapBeforeWatchTower` and `README.md`.
 - `dist/README.md` — tracked build-output note kept beside the generated executable. The build script preserves it while removing every other stale/generated `dist/` entry.
-- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` — example Home Assistant MQTT status automation for SnapBeforeWatchTower. It listens for the JSON report, sends Pushover success/failure/unknown notifications, and displays the payload `dry_run` mode as `DRY-RUN` or `LIVE`.
+- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` — example Home Assistant MQTT status automation for SnapBeforeWatchTower. It extracts run `name` first with legacy `title`/`job` fallbacks, places the comment below it, listens for the JSON report, sends Pushover success/failure/unknown notifications, and displays the payload `dry_run` mode as `DRY-RUN` or `LIVE`.
 - `SAFETY.md` — contains the project disclaimer/liability text requested for SnapBeforeWatchTower plus a project-specific destructive ZFS/log-retention warning and the existing no-license notice.
 - `.gitignore` — excludes private operational `config*` files, runtime dataset/list files, logs, Python caches, legacy build locations, and the complete generated `.build-pyinstaller/` workspace while explicitly unignoring the shipped `config-example.toml`, `config.example.md`, `datasets.example.txt`, and `dist/README.md` files so they remain trackable.
+
+## Additional existing test functions
+
+- `test_optional_log_report_defaults_preserve_existing_configs()` — checks older configs receive basename logging and empty shared report values.
+- `test_report_title_precedence_and_comment_newlines_from_toml()` — checks shared MQTT-title precedence and basic/literal/multiline TOML comment decoding.
+- `test_invalid_log_report_values_fail_before_operations()` — rejects invalid types, paths, glob syntax, multiline headings, unknown keys, and NUL before work.
+- `test_custom_prefix_log_files_and_retention_keep_other_prefixes()` — proves custom-prefix file creation and age/count cleanup leave other prefixes alone.
+- `test_custom_prefix_digest_filename()` — checks Docker inventory shares the selected prefix.
+- `test_email_title_and_multiline_comment_precede_current_report()` — checks email content and exact-prefix attachment selection.
+- `test_main_propagates_log_prefix_and_shared_report_in_success_and_failure()` — exercises the real loader/coordinator on success, continued list/destroy failure, missing dataset, fatal error, and root refusal; checks the run name, independent MQTT title, mail metadata, and unchanged subjects.
+- `test_fixed_log_folder_has_no_temporary_fallback()` — checks fixed placement for non-root callers and propagation of directory failure.
+- `test_unwritable_logs_prevent_external_operations()` — proves log initialization failure prevents command/mail execution.
+- `test_empty_prefix_uses_actual_source_or_frozen_basename()` — checks source, frozen, and unusual executable-name fallback handling.
+- `test_comment_newlines_survive_payload_json_and_worker_publish()` — checks the run name and multiline text survive JSON serialization and the mocked Paho call.
+- `test_reporter_propagates_comment_for_success_and_failure()` — checks both final MQTT outcome paths retain report text.
+
+## Build commands and supporting files
+
+- `python3 -m venv PATH` — creates the isolated build interpreter. Its `python -m pip install -r requirements-build.txt` installs the pinned build tools; `PIP_CACHE_DIR` confines download cache to the build workspace.
+- `rm -rf -- PATHS` in `build-pyinstaller.sh` — removes only generated build roots/legacy build directories. `find dist ... ! -name README.md -exec rm -rf ...` removes stale delivery artifacts while preserving the tracked README. Run only within a reviewed project copy.
+- `mkdir -p` creates generated directories; `cd` selects the project; `test -f`/`test -x` verify required outputs. Shell `shopt`, arrays, `case`, and count checks enforce exactly two entries in `dist/`. `printf`/`echo` print diagnostics; nonzero `exit` rejects invalid output.
+- `pyinstaller --noconfirm --clean --workpath ... --distpath ... SnapBeforeWatchTower.spec` — rebuilds the one-file delivery; work/config are isolated. `Analysis` gathers source and Paho imports, `PYZ` packages modules, and `EXE` creates the console executable without UPX. `--help`/`--version` then smoke-test it.
+- Frozen private `[executable, --mqtt-publish-worker]` — counterpart to the source MQTT child command; keeps credentials on stdin and applies the same parent timeout.
+- README commands `cp`, `nano`, and `chmod 600` prepare private operational files; `sudo python3 ... -c CONFIG` or `sudo ./dist/SnapBeforeWatchTower -c CONFIG` runs the reviewed job. `python3 -B -m unittest discover -s tests -v` runs offline tests without bytecode. `sha256sum -c manifest.sha256` verifies packaged file integrity.
+- `AsusN14E-snaplist`, `Storage-Docker-Cleanup` — preserved original host-specific dataset lists, not executable cleanup scripts. Only read if configured as `dataset_file`.
+- `VERSIONING.md` — complete canonical release history. `versioning.md` is an identical lowercase compatibility copy, kept synchronized for the requested filename.
+- `VERIFICATION.md` — release-specific checks and limitations. `manifest.sha256` covers every delivered project file except itself; `PACKAGE_MANIFEST.md` compares final paths/content with the supplied archive.
+- MQTT module `__main__` error guard catches worker exceptions, prints only their class name, and exits 1, preventing broker/credential text from leaking to the parent.
+
+- `test_shipped_example_covers_every_supported_setting_and_safe_defaults()` — parses the actual delivered TOML, checks the exact supported keys in all five sections, and loads it to verify dry-run and disabled-notification defaults without running external commands.
+
+## Run-name regression coverage
+
+- `test_report_name_loads_without_mqtt_and_is_optional()` — checks trimming, Unicode names, empty/whitespace fallback, and use with MQTT disabled.
+- `test_email_run_name_then_comment_and_subject_unchanged()` — checks actual mail-helper output starts with name then the exact multiline comment, precedes outcome/logs, selects the configured attachments, and preserves success/failure subjects.
+- `test_payload_run_name_is_independent_of_title_with_legacy_fallback()` — checks named and unnamed success/failure MQTT payloads retain the independent title and compatible name/job fallback.
+- `test_reporter_sends_run_name_for_real_and_dry_success_and_failure()` — checks the full reporter passes the configured name in live/dry-run success/failure messages without changing result semantics.
+- Existing invalid-report, legacy-default, shipped-example, public-help, combined coordinator, and JSON/worker tests also cover the name field and reject invalid names before operations.

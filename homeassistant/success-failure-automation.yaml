@@ -1,0 +1,71 @@
+# Notification-only example. Set the topic to your completion topic and use your
+# configured Pushover action name. Your existing sequencing automation already
+# sends Pushover messages: do not enable both unchanged on the same topics.
+alias: SnapBeforeWatchTower completion with Pushover
+description: Typed completion JSON to Pushover; previews ignored, diagnostic tail bounded.
+triggers:
+  - trigger: mqtt
+    topic: homeassistant/SnapBeforeWatchTower/example-host/status
+# Dry-runs are ignored before any real sequence/notification action. For an
+# existing sequencing automation, place the same guard before its sequence.
+conditions: []
+actions:
+  - variables:
+      report: >-
+        {{ trigger.payload_json
+           if trigger.payload_json is defined and trigger.payload_json is mapping
+           else {} }}
+  - if:
+      - condition: template
+        value_template: "{{ report.dry_run | default(false) | bool(false) }}"
+    then:
+      - stop: Dry-run completion ignored
+  - variables:
+      valid_report: >-
+        {{ report.status | default('') in ['success', 'failure']
+           and report.success is defined and report.success is boolean
+           and report.exit_code is defined and report.exit_code is integer
+           and report.success == (report.exit_code == 0)
+           and (report.status == 'success') == report.success }}
+      report_title: >-
+        {{ report.title | default(report.name | default(report.job | default('Unknown job')), true) }}
+  - variables:
+      notice_status: "{{ report.status if valid_report | bool(false) else 'unknown' }}"
+  - variables:
+      notice_title: >-
+        {{ ('✅ ' if notice_status == 'success' else '❌ ' if notice_status == 'failure' else '❔ ')
+           ~ (report_title | string)[:180] ~ ' — ' ~ notice_status }}
+      notice_message: |-
+        {% set header -%}
+        Job: {{ (report_title | string)[:100] }}
+        Status: {{ notice_status }}
+        Success: {{ report.success if valid_report | bool(false) else 'unknown' }}
+        Exit code: {{ (report.exit_code | default('unknown') | string)[:32] }}
+        Warning: {{ report.warning | default(false) | bool(false) }}
+        Error: {{ (report.error | default('None supplied', true) | string)[:200] }}
+        {% if report.warning_detail | default('') %}Warning detail: {{ (report.warning_detail | string)[:160] }}
+        {% endif %}{% if report.command | default('') %}Operation: {{ (report.command | string)[:24] }}
+        {% endif %}{% if report.child_exit_code is defined %}Child exit code: {{ (report.child_exit_code | string)[:24] }}
+        {% endif %}{% if report.job | default('') %}ID: {{ (report.job | string)[:60] }}
+        {% endif %}{% if report.host | default('') %}Host: {{ (report.host | string)[:60] }}
+        {% endif %}{% if report.comment | default('') %}Comment: {{ (report.comment | string)[:100] }}
+        {% endif %}
+        {% if not valid_report | bool(false) %}Report missing fields or status/success/exit_code disagree.
+        {% endif %}{%- endset -%}
+        {#- Reserve space for actual stderr even with oversized optional metadata. -#}
+        {%- set header = (header | trim)[:700] -%}
+        {%- set output = report.stderr | default('No stderr supplied', true) | string -%}
+        {%- set label = '\n\nStderr (latest captured output):\n' -%}
+        {%- set shortened = '\n[stderr shortened for Pushover; full output remains in the MQTT report]' -%}
+        {%- set budget = [0, 1024 - (header | length) - (label | length) - (shortened | length)] | max -%}
+        {{- ((header ~ label ~ (output[-budget:] if budget > 0 else '')
+            ~ (shortened if output | length > budget else '')) | trim)[:1024] -}}
+  - action: notify.pushover
+    data:
+      title: "{{ notice_title }}"
+      message: "{{ notice_message }}"
+      data:
+        priority: "{{ 1 if notice_status == 'failure' else 0 }}"
+        sound: "{{ 'siren' if notice_status == 'failure' else 'pushover' }}"
+mode: queued
+max: 20

@@ -1,114 +1,73 @@
+# Preserved compatibility filename. Same guarded/bounded completion example.
+# Enable only ONE completion automation per topic, including the other example.
+# Notification-only example. Set the topic to your completion topic and use your
+# configured Pushover action name. Your existing sequencing automation already
+# sends Pushover messages: do not enable both unchanged on the same topics.
 alias: SnapBeforeWatchTower - MQTT JSON Status
-description: >-
-  Handle SnapBeforeWatchTower success, failure, or unknown reports from the dedicated
-  non-retained MQTT JSON status topic.
+description: Typed completion JSON to Pushover; previews ignored, diagnostic tail bounded.
 triggers:
   - trigger: mqtt
-    id: snapbeforewatchtower
-    options:
-      topic: homeassistant/SnapBeforeWatchTower/example-host/status
+    topic: homeassistant/SnapBeforeWatchTower/example-host/status
+# Dry-runs are ignored before any real sequence/notification action. For an
+# existing sequencing automation, place the same guard before its sequence.
 conditions: []
 actions:
   - variables:
-      mqtt_status: |-
-        {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.status | default('unknown') | string | lower }}
-        {% else %}
-          unknown
+      report: >-
+        {{ trigger.payload_json
+           if trigger.payload_json is defined and trigger.payload_json is mapping
+           else {} }}
+  - if:
+      - condition: template
+        value_template: "{{ report.dry_run | default(false) | bool(false) }}"
+    then:
+      - stop: Dry-run completion ignored
+  - variables:
+      valid_report: >-
+        {{ report.status | default('') in ['success', 'failure']
+           and report.success is defined and report.success is boolean
+           and report.exit_code is defined and report.exit_code is integer
+           and report.success == (report.exit_code == 0)
+           and (report.status == 'success') == report.success }}
+      report_title: >-
+        {{ report.title | default(report.name | default(report.job | default('Unknown job')), true) }}
+  - variables:
+      notice_status: "{{ report.status if valid_report | bool(false) else 'unknown' }}"
+  - variables:
+      notice_title: >-
+        {{ ('✅ ' if notice_status == 'success' else '❌ ' if notice_status == 'failure' else '❔ ')
+           ~ (report_title | string)[:180] ~ ' — ' ~ notice_status }}
+      notice_message: |-
+        {% set header -%}
+        Job: {{ (report_title | string)[:100] }}
+        Status: {{ notice_status }}
+        Success: {{ report.success if valid_report | bool(false) else 'unknown' }}
+        Exit code: {{ (report.exit_code | default('unknown') | string)[:32] }}
+        Warning: {{ report.warning | default(false) | bool(false) }}
+        Error: {{ (report.error | default('None supplied', true) | string)[:200] }}
+        {% if report.warning_detail | default('') %}Warning detail: {{ (report.warning_detail | string)[:160] }}
+        {% endif %}{% if report.command | default('') %}Operation: {{ (report.command | string)[:24] }}
+        {% endif %}{% if report.child_exit_code is defined %}Child exit code: {{ (report.child_exit_code | string)[:24] }}
+        {% endif %}{% if report.job | default('') %}ID: {{ (report.job | string)[:60] }}
+        {% endif %}{% if report.host | default('') %}Host: {{ (report.host | string)[:60] }}
+        {% endif %}{% if report.comment | default('') %}Comment: {{ (report.comment | string)[:100] }}
         {% endif %}
-      report_name: |-
-        {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.name
-             | default(trigger.payload_json.title
-             | default(trigger.payload_json.job | default('SnapBeforeWatchTower'))) }}
-        {% else %}
-          SnapBeforeWatchTower
-        {% endif %}
-      report_comment: |-
-        {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.comment | default('') }}
-        {% else %}
-          {{ '' }}
-        {% endif %}
-      report_exit_code: |-
-        {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.exit_code | default('unknown') }}
-        {% else %}
-          unknown
-        {% endif %}
-      report_error: |-
-        {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.error | default('No error message') }}
-        {% else %}
-          No valid JSON error message
-        {% endif %}
-      report_stderr: |-
-        {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.stderr | default('No stderr captured') }}
-        {% else %}
-          No valid JSON stderr captured
-        {% endif %}
-      report_warning: |-
-        {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.warning | default(false) | bool }}
-        {% else %}
-          false
-        {% endif %}
-      report_dry_run: |-
-        {% if trigger.payload_json is defined %}
-          {{ trigger.payload_json.dry_run | default(false) | bool }}
-        {% else %}
-          false
-        {% endif %}
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: '{{ mqtt_status == ''success'' }}'
-        sequence:
-          - action: notify.pushover
-            data:
-              title: ✅ SnapBeforeWatchTower successful
-              message: >-
-                {{ report_name }} finished successfully.
-
-                {% if report_comment %}{{ report_comment }}{% endif %}
-
-                Mode: {{ 'DRY-RUN' if report_dry_run | bool else 'LIVE' }}
-                Exit code: {{ report_exit_code }} {% if report_warning | bool %}
-
-                Warning: SnapBeforeWatchTower completed with one or more
-                non-fatal warnings. {% endif %}
-              data:
-                priority: 0
-                sound: pushover
-      - conditions:
-          - condition: template
-            value_template: '{{ mqtt_status == ''failure'' }}'
-        sequence:
-          - action: notify.pushover
-            data:
-              title: ❌SnapBeforeWatchTower failed
-              message: |-
-                {{ report_name }} failed.
-                {% if report_comment %}{{ report_comment }}{% endif %}
-                Mode: {{ 'DRY-RUN' if report_dry_run | bool else 'LIVE' }}
-                Exit code: {{ report_exit_code }}
-                Error: {{ report_error }}
-                Last stderr/output: {{ report_stderr }}
-              data:
-                priority: 1
-                sound: siren
-    default:
-      - action: notify.pushover
-        data:
-          title: ❔ SnapBeforeWatchTower status unknown
-          message: >-
-            Received an MQTT status that was neither success nor failure.
-
-            Name: {{ report_name }} Topic: {{ trigger.topic }} Raw payload: {{
-            trigger.payload | default('No payload') }}
-          data:
-            priority: 0
-            sound: pushover
-mode: parallel
-max: 10
+        {% if not valid_report | bool(false) %}Report missing fields or status/success/exit_code disagree.
+        {% endif %}{%- endset -%}
+        {#- Reserve space for actual stderr even with oversized optional metadata. -#}
+        {%- set header = (header | trim)[:700] -%}
+        {%- set output = report.stderr | default('No stderr supplied', true) | string -%}
+        {%- set label = '\n\nStderr (latest captured output):\n' -%}
+        {%- set shortened = '\n[stderr shortened for Pushover; full output remains in the MQTT report]' -%}
+        {%- set budget = [0, 1024 - (header | length) - (label | length) - (shortened | length)] | max -%}
+        {{- ((header ~ label ~ (output[-budget:] if budget > 0 else '')
+            ~ (shortened if output | length > budget else '')) | trim)[:1024] -}}
+  - action: notify.pushover
+    data:
+      title: "{{ notice_title }}"
+      message: "{{ notice_message }}"
+      data:
+        priority: "{{ 1 if notice_status == 'failure' else 0 }}"
+        sound: "{{ 'siren' if notice_status == 'failure' else 'pushover' }}"
+mode: queued
+max: 20

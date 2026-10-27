@@ -1,2 +1,2 @@
-# Optional: required whenever [mqtt].enabled=true, including dry-run reporting.
+# Optional: required when MQTT_JSON_Status or LiveMQTTEnabled is true, including dry-run.
 paho-mqtt>=2.1,<3

@@ -1,8 +1,9 @@
 config*
-!config-example.toml
-!config.example.md
+!configs/
+!configs/config-example.toml
+!configs/config.example.md
 
-!datasets.example.txt
+!configs/datasets.example.txt
 
 datasets
 
@@ -20,3 +21,10 @@ build/
 dist/*
 !dist/README.md
 *.egg-info/
+
+# Private runtime configuration and host-specific dataset lists (not distributed).
+config.toml
+Storage-Docker-Cleanup
+storage-docker-cleanup
+AsusN14E-snaplist
+asusn14e-snaplist

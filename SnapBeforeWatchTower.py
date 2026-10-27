@@ -12,9 +12,10 @@ from typing import List, Tuple, Optional
 import tempfile
 import tomllib
 from pathlib import Path
-from mqtt_report import RunReporter, validate_config as validate_mqtt_config, worker as mqtt_worker
+from modules.mqtt_report import RunReporter, validate_config as validate_mqtt_config, worker as mqtt_worker
+from modules.mqtt_reporting import capture_command, run_worker_if_requested
 
-__version__ = "0.0.16"
+__version__ = "0.0.20"
 
 class CustomLogger(logging.Logger):
     def __init__(self, name, log_filename):
@@ -257,9 +258,11 @@ def run_cmd(cmd, logger=None, error_logger=None, check=True, dry_run=False):
         #if logger:
         #    logger.info(f"[DRY-RUN] Would run: {' '.join(cmd)}")
         # mimic a successful completed process
+        capture_command(cmd, planned=True)
         return subprocess.CompletedProcess(cmd, 0, "", "")
     
     proc = subprocess.run(cmd, capture_output=True, text=True)
+    capture_command(cmd, proc.stderr, proc.returncode)
 
     if proc.returncode != 0:
         if error_logger:
@@ -309,6 +312,7 @@ def send_mail(subject, body, recipient, attachment_files=None):
     _, stderr_output = process.communicate(input=body.encode())
 
     mail_exit_code = process.returncode
+    capture_command(mail_command, stderr_output, mail_exit_code)
 
     return mail_exit_code, stderr_output.decode().strip()
 
@@ -393,17 +397,23 @@ def parse_older_than(value):
     if not match:
         raise argparse.ArgumentTypeError("Invalid retention age. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
 
-    num = int(match.group(1))
-    unit = match.group(2)
+    try:
+        num = int(match.group(1))
+        unit = match.group(2)
+        if unit == 'd':
+            duration = datetime.timedelta(days=num)
+        elif unit == 'w':
+            duration = datetime.timedelta(weeks=num)
+        else:
+            duration = datetime.timedelta(days=num * 30)  # 30 days per month
+        # Reject an impossible cutoff before any snapshot or Docker work begins.
+        datetime.datetime.now() - duration
+        return duration
+    except (OverflowError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "Retention age is outside the supported range for a date cutoff."
+        ) from exc
 
-    if unit == 'd':
-        return datetime.timedelta(days=num)
-    elif unit == 'w':
-        return datetime.timedelta(weeks=num)
-    elif unit == 'm':
-        return datetime.timedelta(days=num * 30)  # Calculate based on 30 days per month
-    else:
-        raise argparse.ArgumentTypeError("Invalid retention age. Use format 'Nd', 'Nw', or 'Nm' (N=integer).")
 
 def create_snapshot(logger, error_logger, dataset, dry_run=False):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
@@ -415,11 +425,14 @@ def create_snapshot(logger, error_logger, dataset, dry_run=False):
     if dry_run:
         logger.info("")
         logger.info(f"[DRY-RUN] Would create snapshot: {full_snapshot_name}")
+        capture_command(["zfs", "snapshot", full_snapshot_name], planned=True)
         return
 
     try:
-        subprocess.run(["zfs", "snapshot", full_snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
+        proc = subprocess.run(["zfs", "snapshot", full_snapshot_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, check=True)
+        capture_command(proc.args, proc.stderr, proc.returncode)
     except subprocess.CalledProcessError as e:
+        capture_command(e.cmd, e.stderr, e.returncode)
         print_separator(logger, error_logger)
         error_logger.error(f"Error creating snapshot of {dataset}. Command output: {e.stderr.strip()}")
         raise e
@@ -630,6 +643,7 @@ def save_docker_image_digests(
         text=True,
     )
 
+    capture_command(["docker", "images", "--digests"], proc.stderr, proc.returncode)
     if proc.returncode != 0:
         # Don’t leave behind an empty/partial file
         try:
@@ -722,7 +736,7 @@ def load_app_config(path):
         raise ValueError(f'[application] is missing required key(s): {names}')
 
     command = application['command']
-    if command not in {'create', 'delete'}:
+    if not isinstance(command, str) or command not in {'create', 'delete'}:
         raise ValueError('[application].command must be "create" or "delete"')
 
     dataset_file = application['dataset_file']
@@ -781,19 +795,15 @@ def load_app_config(path):
     mqtt = document.get('mqtt', {})
     if not isinstance(mqtt, dict):
         raise ValueError('[mqtt] must be a TOML table')
-    mqtt_enabled = mqtt.get('enabled', False)
-    if type(mqtt_enabled) is not bool:
-        raise ValueError('[mqtt].enabled must be true or false')
-    mqtt_values = dict(mqtt)
-    mqtt_values.pop('enabled', None)
-    if report_title:
-        mqtt_values['title'] = report_title
     mqtt_config = validate_mqtt_config(
-        mqtt_values,
+        mqtt,
         base_dir=config_path.parent,
         dry_run=dry_run,
-        enabled=mqtt_enabled,
+        config_path=config_path,
     )
+
+    if mqtt_config and report_title:
+        mqtt_config['title'] = report_title
 
     args = argparse.Namespace(
         command=command,
@@ -815,6 +825,7 @@ def load_app_config(path):
 
 
 def main():
+    run_worker_if_requested()  # Source/frozen live transport; no job/CLI work in worker.
     # Private entry point used only by the frozen PyInstaller executable for the
     # bounded MQTT publish worker. Keeping configuration JSON on stdin ensures
     # broker credentials never appear in the process command line.
@@ -844,14 +855,14 @@ def main():
             '  are application settings. [mail] and [mqtt] configure notifications.\n'
             '  [logging].prefix names log files. [report].name sets the run name in MQTT\n'
             '  and the email body; comment follows the name. Neither changes mail subjects.\n'
-            '  [report].title sets the MQTT title and fallback email heading;\n'
+            '  [report].title supplies the fallback friendly report name and email heading;\n'
             '  comment accepts TOML \\n escapes and multiline strings.\n\n'
             'Runtime requires Linux and root, including dry-run. Dry-run still lists ZFS\n'
             'snapshots, writes logs, and can send enabled mail/MQTT notifications.\n'
             'Logs use application-local logs/ with no fallback; a binary in dist/\n'
             'uses its parent project logs/ to keep dist/ clean.\n'
             'File paths inside TOML are relative to that configuration file.\n'
-            'See config-example.toml for every setting and README.md for full usage.'
+            'See configs/config-example.toml for every setting and README.md for full usage.'
         ),
     )
     parser.add_argument('-c', metavar='CONFIG', required=True, help='Required for operation: load all settings from this TOML file; relative CONFIG uses the current working directory')
@@ -890,12 +901,13 @@ def run(args, reporter):
     reporter.attach(error_logger)
 
     mqtt_config = getattr(reporter, 'config', None)
-    mqtt_enabled = bool(mqtt_config)
-    mqtt_on_success = bool(mqtt_config.get('on_success', False)) if mqtt_enabled else False
+    mqtt_enabled = bool(mqtt_config and mqtt_config.get('_completion_enabled', False))
+    mqtt_live_enabled = bool(mqtt_config and mqtt_config.get('LiveMQTTEnabled', False))
+    mqtt_on_success = bool(mqtt_config.get('on_success', False)) if mqtt_config else False
     logger.info(
         "Notification policy: dry_run=%s; mail_enabled=%s; mail_on_success=%s; "
-        "mqtt_enabled=%s; mqtt_on_success=%s",
-        dry_run, bool(args.send_mail), bool(args.mail_on_success), mqtt_enabled, mqtt_on_success,
+        "MQTT_JSON_Status=%s; SendMQTTOnSuccess=%s; LiveMQTTEnabled=%s",
+        dry_run, bool(args.send_mail), bool(args.mail_on_success), mqtt_enabled, mqtt_on_success, mqtt_live_enabled,
     )
 
     if dry_run:
@@ -932,17 +944,21 @@ def run(args, reporter):
     continue_on_other_failures = getattr(args, 'continue_on_other_failures', True)
 
     try:
+        reporter.update(phase='read_dataset_list')
         # Read the dataset file inside the try block, so bad paths also trigger error mail.
         with open(args.file, "r", encoding="utf-8") as file:
             datasets = [ln.strip() for ln in file.read().splitlines() if ln.strip()]
 
+        reporter.plan(datasets)
         if args.command == 'create':
+            reporter.update(phase='docker_digest_inventory')
             save_docker_image_digests(logger, error_logger, log_folder, log_date, dry_run=dry_run, prefix=log_prefix)
 
             print_separator(logger)
             logger.info("Starting snapshot creation..." + (" [DRY-RUN]" if dry_run else ""))
 
-            for dataset in datasets:
+            for index, dataset in enumerate(datasets):
+                reporter.begin_item(index, dataset)
 
                 print_separator(logger)
 
@@ -952,8 +968,11 @@ def run(args, reporter):
                     # 🔹 NEW: spacing between create and stats
                     logger.info("")
 
+                    reporter.update(phase='snapshot_retention')
                     delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
+                    reporter.end_item(index, dataset)
                 except (subprocess.CalledProcessError, CommandError) as exc:
+                    reporter.end_item(index, dataset, exc)
                     if handle_dataset_command_failure(
                         error_logger,
                         dataset,
@@ -975,6 +994,7 @@ def run(args, reporter):
             else:
                 logger.info("Snapshot creation completed.")
 
+            reporter.update(phase='log_retention', current_item='')
             delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run, prefix=log_prefix)
 
         elif args.command == 'delete':
@@ -983,10 +1003,13 @@ def run(args, reporter):
 
             print_separator(logger)
 
-            for dataset in datasets:
+            for index, dataset in enumerate(datasets):
+                reporter.begin_item(index, dataset)
                 try:
                     delete_old_snapshots(logger, error_logger, dataset, args.older_than, args.retain_count, dry_run=dry_run)
+                    reporter.end_item(index, dataset)
                 except CommandError as exc:
+                    reporter.end_item(index, dataset, exc)
                     if handle_dataset_command_failure(
                         error_logger,
                         dataset,
@@ -1013,6 +1036,7 @@ def run(args, reporter):
 
             print_separator(logger)
 
+            reporter.update(phase='log_retention', current_item='')
             delete_old_files(logger, error_logger, log_folder, args.older_than, args.retain_count, dry_run=dry_run, prefix=log_prefix)
 
         if other_dataset_failures:

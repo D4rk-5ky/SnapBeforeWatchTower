@@ -25,7 +25,7 @@ You are responsible for reviewing the code, testing it in a safe environment, ma
 
 ---
 
-SnapBeforeWatchTower creates ZFS snapshots for datasets listed in a text file, records Docker image digests during `create` runs, and removes old matching snapshots and log groups according to an age/count retention policy. Configuration is supplied through one TOML file.
+SnapBeforeWatchTower **0.0.20** creates ZFS snapshots for datasets listed in a text file, records Docker image digests during `create` runs, and removes old matching snapshots and log groups according to an age/count retention policy. Configuration is supplied through one TOML file.
 
 The application does **not** start Watchtower, update containers, restore data, stop services, or create application-consistent snapshots.
 
@@ -36,15 +36,15 @@ The application does **not** start Watchtower, update containers, restore data, 
 - Root privileges for normal operation, including dry-run.
 - Docker CLI/daemon for image-digest capture during a real `create` run. Docker is not invoked for `delete` or dry-run.
 - Optional mail notifications require a local `mail` program that supports `-s` and `--attach`.
-- Optional MQTT reporting in **source mode** requires `paho-mqtt` from `requirements-mqtt.txt` whenever `[mqtt].enabled = true`, including dry-run because failure reports may still need to publish. The standalone PyInstaller executable bundles Paho and does not need a separate Python/Paho install on the target host.
+- Optional MQTT reporting in **source mode** requires `paho-mqtt` from `requirements-mqtt.txt` whenever `[mqtt].MQTT_JSON_Status = true` or `[mqtt].LiveMQTTEnabled = true`, including dry-run because failure reports may still need to publish. The standalone PyInstaller executable bundles Paho and does not need a separate Python/Paho install on the target host.
 
 ## Setup
 
 Copy the example configuration and edit it:
 
 ```bash
-cp config-example.toml config.toml
-cp datasets.example.txt datasets
+cp configs/config-example.toml config.toml
+cp configs/datasets.example.txt datasets
 nano config.toml
 nano datasets
 chmod 600 config.toml
@@ -54,11 +54,23 @@ chmod 600 config.toml
 
 `config.toml` is ignored by `.gitignore` because it can contain an MQTT password.
 
-The supplied configuration example starts with `dry_run = true`, mail disabled, and MQTT disabled. The supplied `datasets.example.txt` is a harmless format example and should be copied/edited into the `dataset_file` named by your TOML. These defaults are intentional so a copied example does not immediately destroy snapshots or send notifications.
+The supplied configuration example starts with `dry_run = true`, mail disabled, and MQTT disabled. The supplied `configs/datasets.example.txt` is a harmless format example and should be copied/edited into the `dataset_file` named by your TOML. These defaults are intentional so a copied example does not immediately destroy snapshots or send notifications.
+
+Supporting Python modules are packaged in `modules/`; `SnapBeforeWatchTower.py`
+remains the root CLI entry point. Configuration and dataset examples live in
+`configs/`. Copy examples into private runtime files as shown above; relative
+paths inside TOML are still resolved against the copied TOML file's directory.
 
 ## Standalone PyInstaller build
 
-A pinned PyInstaller build recipe is included. Build dependencies are isolated from the runtime/source dependency file:
+A pinned PyInstaller build recipe is included. Inspect its options and source version before building:
+
+```bash
+./build-pyinstaller.sh --help
+./build-pyinstaller.sh --version
+```
+
+`-h`/`--help` explains the build requirements, replaced directories, and output checks. `--version` reads the application source version without importing it. Use either option alone; both exit before any build cleanup, installation, or directory creation. Unknown arguments and combinations exit 2 before build work. With no arguments the script performs the build. Build dependencies are isolated from the runtime/source dependency file:
 
 ```bash
 ./build-pyinstaller.sh
@@ -112,9 +124,9 @@ Relative dataset and TLS file paths in the TOML file are resolved relative to th
 
 ## Configuration
 
-The complete commented configuration is in `config-example.toml`. Every supported setting is shown there.
+The complete commented configuration is in `configs/config-example.toml`. Every supported setting is shown there.
 
-`config.example.md` is a supplemental human-readable reference for the same current TOML settings and public `-c CONFIG`, `-h`/`--help`, and `--version` flags; it is not loaded by the application.
+`configs/config.example.md` is a supplemental human-readable reference for the same current TOML settings and public `-c CONFIG`, `-h`/`--help`, and `--version` flags; it is not loaded by the application.
 
 ### `[application]`
 
@@ -133,46 +145,27 @@ continue_on_other_failures = true
 
 `dataset_file` points to the UTF-8 dataset-list file. Each non-empty line is treated as one complete ZFS dataset name. Blank lines are ignored. Dataset lines are not deduplicated and there is no comment syntax. A relative path is resolved relative to the TOML file. Missing-dataset and other per-dataset ZFS continuation behavior is controlled by the two settings below; either kind of recorded failure still makes the overall run fail.
 
-`older_than` controls the age cutoff for managed snapshots and log groups. It must be a nonnegative integer followed by `d`, `w`, or `m`: for example `7d`, `2w`, or `1m`. Months are treated as 30 days. Deletion uses a strict older-than comparison.
+`older_than` controls the age cutoff for managed snapshots and log groups. It must be a nonnegative integer followed by `d`, `w`, or `m`: for example `7d`, `2w`, or `1m`. Months are treated as 30 days. Deletion uses a strict older-than comparison. The duration and its cutoff must fit Python’s date range (no earlier than year 1); an out-of-range age is rejected during configuration validation before operations.
 
 `retain_count` protects at least that many newest matching snapshots per dataset and newest log timestamp groups. Zero or a negative value disables the count floor; the age cutoff still applies.
 
-`dry_run = true` previews ZFS snapshot creation/destruction and old-log deletion. Dry-run still lists existing ZFS snapshots and creates run logs; Docker digest collection is skipped. Mail and MQTT reporting follow the same success/failure policy as a real run: when a channel is enabled, failures are reported regardless of its `on_success` value, while successful dry-runs are reported only when that channel has `on_success = true`.
+`dry_run = true` previews ZFS snapshot creation/destruction and old-log deletion. Dry-run still lists existing ZFS snapshots and creates run logs; Docker digest collection is skipped. Mail and MQTT reporting follow the same success/failure policy as a real run: when a channel is enabled, failures are reported when completion is enabled, while successful reports require `[mail].on_success = true` for mail or `[mqtt].SendMQTTOnSuccess = true` for MQTT. Live preview is controlled independently by `[mqtt].LiveMQTTEnabled`.
 
 `continue_on_missing_dataset = true` means that when ZFS explicitly reports a configured dataset as nonexistent, the script records that dataset as failed and moves to the next configured dataset. `false` stops dataset processing immediately. In both cases the run result is failure and enabled mail/MQTT reports that failure. The setting defaults to `true` when omitted.
 
 `continue_on_other_failures = true` means that any other checked per-dataset `zfs list` or `zfs destroy` command failure is recorded and processing moves to the next configured dataset. `false` stops immediately on that command failure. This setting does **not** make snapshot-create failures, configuration errors, root failures, missing/unreadable input files, Docker failures, log-file failures, or other global failures recoverable. It defaults to `true` when omitted.
 
-### `[logging]` and `[report]` — optional
+### `[logging]` and `[report]`
 
-```toml
-[logging]
-prefix = ""
+`[logging].prefix` selects log/digest filenames; empty uses the application
+basename. It must be a single safe filename component, as described in the
+configuration comments. Snapshot naming is unaffected.
 
-[report]
-title = ""
-name = "Nightly Docker snapshots"
-comment = ""
-```
-
-| Setting | Default and usage |
-| --- | --- |
-| `[logging].prefix` | Empty/omitted uses the actual resolved script/executable basename without its final extension. A custom prefix must start with an ASCII letter/digit and use only letters, digits, dots, underscores, and hyphens. It selects `.log`, `.err`, `.digest`, log retention, and email attachment names; snapshot names remain fixed. |
-| `[report].title` | Optional MQTT title override; empty/omitted uses `[mqtt].title`. Also the email body heading fallback when `name` is empty (then app basename if title is also empty). Must be a single-line string without NUL; surrounding whitespace is stripped. Does not change the email subject. |
-| `[report].name` | Optional run name used as the email body heading and MQTT `name`/`job` fields. Single-line string without NUL; surrounding whitespace is stripped. Empty/omitted preserves the email title/basename fallback and MQTT title fallback. Separate from MQTT `title` and the email subject. |
-| `[report].comment` | Default empty. Placed directly below the run name in the email body, before the outcome and logs, and sent as the MQTT JSON `comment` string. Never added to the email subject. Whitespace/newlines are preserved; NUL is rejected. Basic TOML strings decode `\n`, while literal single-quoted strings preserve it. Multiline basic/literal strings are accepted. |
-
-Use these report settings to identify a job:
-
-```toml
-[report]
-name = "Nightly Docker snapshots"
-comment = "Before Watchtower updates."
-```
-
-The email body starts with the name, a blank line, then the comment. The normal success/failure subject stays unchanged. MQTT includes `"name": "Nightly Docker snapshots"`, the same `job` value, and `"comment": "Before Watchtower updates."`; its `title` keeps its independently configured value. Use lowercase `[report]`: TOML section/key names are case-sensitive.
-
-For example, `comment = "First line\nSecond line"` creates two lines in both reports. Unknown sections/keys are rejected. Prefix/title/name must be single-line strings; an empty custom prefix uses the basename fallback.
+`[report].name` is the friendly run name in email and both completion JSON
+`name`/`title`. MQTT `job` stays `SnapBeforeWatchTower`. An omitted run name uses
+`LiveBackupName`, then the report title/project fallback for MQTT. Email keeps its
+existing name/title/basename fallback. `[report].comment` preserves TOML-decoded
+newlines in email and completion JSON and never changes subjects.
 
 ### `[mail]` — optional
 
@@ -187,67 +180,47 @@ When `enabled = false`, mail is disabled regardless of the other mail values.
 
 When `enabled = true`, `recipient` must be non-empty. Failure mail is always enabled, including during dry-run. `on_success = true` additionally sends a success report for both real and dry-run executions; `on_success = false` suppresses only success mail and never suppresses failure mail. Dry-run mail subjects are explicitly marked `DRY-RUN`. A run that records missing datasets or continuable per-dataset `zfs list`/`zfs destroy` failures still sends failure mail after remaining configured datasets are processed; missing-only failures retain the dedicated missing-dataset subject, while other continued command failures use a dataset-command-failure subject. The report selects the newest `.log` and newest `.err` independently by modification time; the selected `.err` is included only when non-empty. Every report path uses the configured prefix and run name, with the comment immediately below the name in the body. Without a name the heading falls back to the configured title/app basename; the subject retains its status wording. Mail delivery failure is logged but does not replace the snapshot job exit result. The mail report records whether the local `mail` command returned success; a failed success-mail attempt is written explicitly to the error log so it cannot be mistaken for an `on_success` suppression.
 
-### `[mqtt]` — optional
+### `[mqtt]` — completion reporting and live preview
 
-When running from Python source, install the optional dependency with the same interpreter used to run the application:
+Install the source-mode optional dependency with the interpreter used to run
+the app (`python3 -m pip install -r requirements-mqtt.txt`). The binary bundles it.
 
-```bash
-python3 -m pip install -r requirements-mqtt.txt
-```
+`configs/config-example.toml` shows all supported settings with comments
+and placeholder credentials. The distributed configuration starts in dry-run
+with completion and live reporting disabled. `MQTT_JSON_Status` and
+`LiveMQTTEnabled` enable the two channels independently. `MQTT_JSON_Status` is the only completion-report enable; there is no `[mqtt].enabled`.
+Both channels use the single `broker_address`, `broker_port`, `mqtt_username`,
+`mqtt_password` and `MQTTTLS`/certificate settings. `SendMQTTOnSuccess` suppresses
+successful completion messages only; failures still report when completion is
+on. The completion topic is unchanged.
 
-Configuration example:
+Old duplicate MQTT names (`enabled`, `on_success`, `host`, `port`, `topic`,
+`username`, `password`, `tls`, `title`) are rejected with replacement guidance.
+Update your private `[mqtt]` table from the commented example, retaining your
+existing topic/credentials in the canonical fields. Other config sections,
+including `[mail].enabled`, are unchanged.
 
-```toml
-[mqtt]
-enabled = false
-on_success = false
-host = "mqtt.example.local"
-port = 1883
-topic = "homeassistant/SnapBeforeWatchTower/example-host/status"
-title = "Example host - SnapBeforeWatchTower"
-username = "your-mqtt-user"
-password = "<String>"
-qos = 0
-tls = false
-ca_file = ""
-cert_file = ""
-key_file = ""
-timeout = 15
-```
+The usage instructions are in the `modules/mqtt_reporting.py` module docstring; the
+configuration comments explain each setting. The integration adds no JSON
+configuration, state, cache, or log files. Existing application logs/digests stay
+unchanged. Job commands and invocation remain the same.
 
-When `enabled = false`, MQTT reporting is disabled. In source mode `paho-mqtt` is then not required; the standalone executable already contains it. Unsupported MQTT keys are still rejected.
+Completion reports include matching friendly `name`/`title`, stable `job`, typed
+`status`/`success`/`exit_code`, actual recent child stderr, warnings, dry-run,
+host and run/time metadata. The reported exit code is the original process
+result; an uncaught child-command exception still makes this app exit 1. The
+child's distinct return code is preserved as `child_exit_code` when available.
+Reporting failures do not replace the process result. Each report is a separate
+JSON object, without an outer success/failure label. The snapshot-job adapter
+includes `planned_datasets`, `failed_datasets`, and `skipped_datasets` with actual
+source names, occurrence IDs and reasons. It does not invent a destination or
+copy Syncerate's job ID/exit code. Generic live-module reports remain independent
+of dataset-specific extensions.
 
-When `enabled = true`, MQTT failure reports are always attempted, including during dry-run. `on_success = true` additionally publishes success reports for both real and dry-run executions; `on_success = false` suppresses only successful MQTT reports. Because a dry-run can still fail and must then report that failure, `paho-mqtt` is required whenever MQTT is enabled. Before a publish attempt the run log says that the final MQTT report is being attempted; success is logged as published. If the bounded worker fails, the parent logs a credential-safe exception class such as `ConnectionRefusedError` instead of silently reducing the failure to a generic no-message symptom.
-
-When `enabled = true`, `host` and `topic` are required non-empty strings. `topic` cannot contain `+` or `#`. `port` must be 1–65535, `qos` must be 0, 1, or 2, and `timeout` must be 1–120 seconds. Reports are always published with `retain = false`. `[mqtt].title` defaults to `"SnapBeforeWatchTower"` and is overridden by a nonempty `[report].title`; `qos` to `0`, `timeout` to `15`, and `tls` and `on_success` to `false` when omitted.
-
-`username` and `password` are plain TOML strings. An empty string disables that optional value. A non-empty password requires a non-empty username. Because the password is stored directly in the TOML file, protect the operational config with restrictive filesystem permissions and do not commit or share it.
-
-`tls = true` enables certificate and hostname verification. If `port` is omitted, it defaults to `8883` with TLS or `1883` without TLS. An explicitly configured port is kept; change the example's `port = 1883` to `8883` when appropriate for your TLS broker. `ca_file` is optional; an empty string uses system trust. `cert_file` and `key_file` must either both be empty or both point to files. Relative certificate/key paths are resolved relative to the TOML file.
-
-The final MQTT payload contains `status`, `title`, `name`, `job`, `exit_code`, `warning`, `error`, `stderr`, `comment`, `command`, `version`, `run_id`, `finished_at`, and `dry_run`. `dry_run` is `true` for preview runs and `false` for real runs. Exit code 0 reports `status: success`; nonzero outcomes report `status: failure`. Missing datasets and continued per-dataset `zfs list`/`zfs destroy` failures do not introduce new status values: after any configured continuation, the final report is still `status: failure` with `exit_code: 1`. Missing-only runs identify the missing dataset name(s) and the `dataset does not exist` reason in `error`; continued list/destroy failures identify the affected dataset(s), while detailed current-run command errors remain available in bounded `stderr`. This keeps the supplied Home Assistant success/failure branching unchanged. Nonfatal messages captured by the error logger can produce `warning: true` while the overall status remains success. Error fields are bounded to 4096 characters.
-
-MQTT runs in a separate child process so its total operation can be timed out. Broker credentials are passed to that child over stdin rather than on its process command line. MQTT publish failures are sanitized in application logs and do not replace the underlying snapshot operation result.
-
-### Notification policy
-
-Mail and MQTT use the same result-selection rules independently:
-
-| Channel state | Successful real run | Successful dry-run | Failed real run | Failed dry-run |
-| --- | --- | --- | --- | --- |
-| `enabled = false` | No report | No report | No report | No report |
-| `enabled = true`, `on_success = false` | No success report | No success report | Failure report | Failure report |
-| `enabled = true`, `on_success = true` | Success report | Success report | Failure report | Failure report |
-
-`[mail].on_success` controls only mail success reports. `[mqtt].on_success` controls only MQTT success reports. One channel can therefore report success while the other remains failure-only.
-
-### Notification delivery diagnostics
-
-Every run writes a notification-policy line showing `dry_run`, whether mail/MQTT are enabled, and both success-report switches. On a successful dry-run with both channels enabled and both `on_success = true`, the log should then contain a mail success-report attempt and an MQTT success-report publish attempt.
-
-For mail, `Mail was sent successfully` means the local `mail` command returned exit code 0. A nonzero mail exit code is logged with its stderr and a clear `Success mail report was attempted...delivery failure` message. The notification transport failure does not change a successful ZFS/dry-run result.
-
-For MQTT, `MQTT final success report published [DRY-RUN]` confirms that the Paho worker completed successfully. If publishing fails, the log includes a safe worker exception class when available (for example `ConnectionRefusedError`) while never printing the MQTT password or request JSON. A timeout is logged separately as delivery unconfirmed.
+Live state uses separate topics and measures attempted dataset entries,
+success/failure/skipped outcomes, snapshot creates/deletes and dry-run plans.
+Transfers are not measured by this application; bytes/rates remain null. The
+card discovers devices by configurable manufacturer and stable sensor roles.
 
 ## Dataset file
 
@@ -258,7 +231,7 @@ tank/docker
 tank/appdata
 ```
 
-The release includes `datasets.example.txt` as the dataset-list format example. Copy it to the filename configured by `dataset_file` (the default example uses `datasets`) and replace the example dataset names before use. Dataset names are passed literally to ZFS after surrounding whitespace is stripped.
+The release includes `configs/datasets.example.txt` as the dataset-list format example. Copy it to the filename configured by `dataset_file` (the default example uses `datasets`) and replace the example dataset names before use. Dataset names are passed literally to ZFS after surrounding whitespace is stripped.
 
 ## Snapshot naming and retention
 
@@ -286,7 +259,7 @@ PREFIX-Date-YYYY-MM-DD_HH_MM_SS.err
 PREFIX-Date-YYYY-MM-DD_HH_MM_SS.digest
 ```
 
-An empty current `.err` is removed at the end of the run, including dry-run. Mail reads the newest log/error files independently, so a report can include an older non-empty error file when the current one is unavailable. The original `AsusN14E-snaplist` and `Storage-Docker-Cleanup` files are plain dataset lists retained for reference. They are read only if selected by `dataset_file`; review their host-specific names before use.
+An empty current `.err` is removed at the end of the run, including dry-run. Mail reads the newest log/error files independently, so a report can include an older non-empty error file when the current one is unavailable. Private `config.toml`, `datasets`, `Storage-Docker-Cleanup`, and `AsusN14E-snaplist` files are not distributed and are ignored by Git (including lowercase host-list spellings). Create your own config/dataset list from the examples in `configs/`.
 
 Managed old log/digest files are grouped by timestamp and use the same `older_than`/`retain_count` policy as snapshots.
 
@@ -314,13 +287,17 @@ mail -s SUBJECT [--attach FILE ...] RECIPIENT
 
 The application does not use shell interpolation for these commands; arguments are passed as separate subprocess arguments.
 
-## Home Assistant MQTT automation
+## Home Assistant MQTT examples
 
-`homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` contains a compatible Home Assistant automation. Its MQTT trigger topic must exactly match `[mqtt].topic` in your TOML configuration. The automation displays the payload run `name` (falling back to `title`/`job`) above the comment and reads the payload `dry_run` flag and displays `DRY-RUN` or `LIVE` in success and failure notifications. Missing datasets and continued list/destroy failures still use `status: failure`, and the automation includes the payload `error` and `stderr` fields so the failure reason remains visible.
-
-Set the MQTT trigger topic to exactly match `[mqtt].topic`. The shipped examples use `homeassistant/SnapBeforeWatchTower/example-host/status`; replace `example-host` consistently in your own TOML and automation. The automation has one MQTT trigger and branches on the JSON `status` using Choose. It displays the run name, `DRY-RUN` or `LIVE`, the failure `error`/`stderr`, the optional multiline `comment`, and any success warning. The templates extract JSON fields and format notification text; the trigger and notification actions can be edited visually.
-
-Enabling this automation does not enable application MQTT reporting: set `[mqtt].enabled = true` separately. Successful preview runs need `[mqtt].on_success = true` to publish a test report. Use a broker test message or an actual disposable-dataset dry-run and inspect the automation Trace to verify delivery and branching.
+The supplied `homeassistant/success-failure-automation.yaml` and
+`homeassistant/live-preview-card.yaml` are the completion/Pushover automation
+and manufacturer-discovered Markdown card. Keep the completion topic matching
+your config. Configure your own Pushover service, and enable only one completion
+automation on that topic. The original automation filename is retained as an
+alternative. Both examples ignore dry-run reports before notification or real
+sequence actions. Live sensors/events do not trigger the completion automation.
+See the module instructions and YAML comments for installation and live-test
+limits. This project does not modify a Home Assistant installation.
 
 ## Safety
 
@@ -334,7 +311,9 @@ This program performs destructive ZFS snapshot deletion and log deletion. Review
 | `1` | Root refusal or an uncaught operational/configured-dataset failure. Continued per-dataset failures still produce an overall failure. |
 | `2` | CLI or configuration loading/validation error, before operational work and notification reporting. |
 
-Review the logs as well as the exit code. MQTT reports logged nonfatal errors as `warning: true` on an otherwise successful run. Notification delivery failure does not change the operation result; a successful exit alone does not prove delivery. Earlier completed snapshots or deletions are not rolled back on later failure.
+The command must be a TOML string with value `"create"` or `"delete"`; arrays, tables, booleans, and numbers are configuration errors. Invalid command types and out-of-range ages exit 2 with a configuration message before logs, root checks, operations, or reports. Configuration errors do not send mail/MQTT.
+
+Review the logs as well as the exit code. MQTT reports logged nonfatal errors as `warning: true` on an otherwise successful run; logger messages are kept separate from actual child stderr. Notification delivery failure does not change the operation result; a successful exit alone does not prove delivery. Earlier completed snapshots or deletions are not rolled back on later failure.
 
 To create snapshots, set `[application].command = "create"`. To perform retention only, set it to `"delete"`. Keep `dry_run = true` while checking the intended plan; after testing on disposable data, set it to `false` for real operations. Invoke the same `-c CONFIG` command for either mode.
 
@@ -344,7 +323,7 @@ Run the included offline regression tests from the project directory with Python
 python3 -B -m unittest discover -s tests -v
 ```
 
-`-B` prevents bytecode cache creation, `discover -s tests` finds the shipped tests, and `-v` shows each result. External application commands and MQTT delivery are mocked in these tests. Read `VERIFICATION.md` for release checks and live-testing limits. `manifest.sha256` lists release file hashes, excluding itself; on Linux verify them from this directory with:
+`-B` prevents bytecode cache creation, `discover -s tests` finds the shipped tests, and `-v` shows each result. Storage and notification delivery are isolated in these tests. One harmless Python child verifies real stderr capture. Optional PyYAML/Jinja tests render the HA examples offline and skip if those test tools are unavailable. Read `VERIFICATION.md` for release checks and live-testing limits. `manifest.sha256` lists release file hashes, excluding itself; on Linux verify them from this directory with:
 
 ```bash
 sha256sum -c manifest.sha256

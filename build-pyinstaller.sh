@@ -2,6 +2,50 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Informational/invalid arguments must exit before deleting artifacts or creating
+# the build environment. Read the version from source without importing the app.
+if (( $# > 0 )); then
+    if (( $# != 1 )); then
+        echo "ERROR: expected no arguments, --help, or --version. See --help." >&2
+        exit 2
+    fi
+    case "$1" in
+        -h|--help)
+            cat <<'HELP'
+Usage: build-pyinstaller.sh [--help | --version]
+
+With no arguments, rebuild dist/SnapBeforeWatchTower using requirements-build.txt.
+Requires Linux, Python 3.11+, venv support, and access to the pinned dependencies.
+The build replaces .build-pyinstaller/, removes legacy build/ and .venv-build/,
+and removes every dist/ entry except README.md before writing the executable.
+Run it only in a project copy whose generated artifacts may be replaced.
+
+Options (used alone):
+  -h, --help  Show this help and exit without creating or removing files.
+  --version   Show the application source version and exit without build work.
+
+The build bundles Python/Paho MQTT; zfs, docker and mail remain host tools.
+After building, --help/--version smoke checks and the two-file dist/ check run.
+HELP
+            exit 0
+            ;;
+        --version)
+            python3 -B -c 'import ast, pathlib, sys
+module = ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+version = next(ast.literal_eval(node.value) for node in module.body
+               if isinstance(node, ast.Assign)
+               and any(isinstance(target, ast.Name) and target.id == "__version__"
+                       for target in node.targets))
+print("SnapBeforeWatchTower build helper " + version)' "${PROJECT_DIR}/SnapBeforeWatchTower.py"
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument. Use --help or --version, or no arguments to build." >&2
+            exit 2
+            ;;
+    esac
+fi
+
 BUILD_ROOT="${PROJECT_DIR}/.build-pyinstaller"
 VENV_DIR="${BUILD_ROOT}/venv"
 WORK_DIR="${BUILD_ROOT}/work"

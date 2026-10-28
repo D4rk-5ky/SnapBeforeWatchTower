@@ -52,7 +52,7 @@ This map describes the current application, why each function/class exists, and 
 
 - `WasMailSent(logger, error_logger, MailExitCode, popenstderr)` — writes a clear success/failure result for the local mail command without changing the underlying snapshot result.
 
-- `parse_older_than(value)` — converts `Nd`, `Nw`, or `Nm` strings to `datetime.timedelta`. Months intentionally mean 30 days. It rejects negative, fractional, uppercase, and malformed values. TOML loading reuses this existing parser instead of duplicating retention-age logic.
+- `parse_older_than(value)` — converts `Nd`, `Nw`, or `Nm` strings to `datetime.timedelta`. Months intentionally mean 30 days. It rejects negative, fractional, uppercase, and malformed values, integer/duration overflow, and a computed cutoff earlier than Python year 1. Overflow is normalized to `argparse.ArgumentTypeError`, which the loader converts into a configuration error before operations. TOML loading reuses this existing parser instead of duplicating retention-age logic.
 
 - `create_snapshot(logger, error_logger, dataset, dry_run=False)` — creates one timestamped managed snapshot for one dataset. In dry-run it only reports what would be created. Real ZFS failures are logged and re-raised so later logic cannot treat a failed creation as success.
 
@@ -72,31 +72,31 @@ This map describes the current application, why each function/class exists, and 
 
 - `load_report_settings(document)` — validates optional [logging] and [report] tables, rejects unknown keys/types/NUL and multiline prefix/title/name values, and restricts a custom prefix to a single safe filename component. It strips surrounding name/title whitespace, preserves comment whitespace/newlines as decoded by TOML, and returns `(prefix, title, name, comment)` for the loader.
 
-- `load_app_config(path)` — loads the single TOML file and converts its settings into the runtime shape used by `run()`. It maps optional `[report].name` to `args.report_name` independently of title/comment and validates supported sections/keys/types, reuses `parse_older_than()`, resolves `dataset_file` relative to the TOML, validates `continue_on_missing_dataset` and `continue_on_other_failures` as booleans (both default `true` when omitted for backward compatibility), turns disabled mail into `send_mail=None`, and delegates `[mqtt]` validation to `mqtt_report.validate_config()`.
+- `load_app_config(path)` — loads the single TOML file and converts its settings into the runtime shape used by `run()`. It maps optional `[report].name` to `args.report_name` independently of title/comment and validates supported sections/keys/types (including command string type before set membership so arrays/tables do not raise TypeError), reuses `parse_older_than()`, resolves `dataset_file` relative to the TOML, validates `continue_on_missing_dataset` and `continue_on_other_failures` as booleans (both default `true` when omitted for backward compatibility), turns disabled mail into `send_mail=None`, and delegates `[mqtt]` validation to `mqtt_report.validate_config()`.
 
 - `main()` — first recognizes the private `--mqtt-publish-worker` switch **only when frozen by PyInstaller**, allowing the standalone executable to act as its own bounded MQTT worker without exposing credentials on argv. Otherwise it builds the public CLI: `-c CONFIG` remains required for normal operation, standard `-h`/`--help` prints all public flags, and `--version` prints `__version__`; both informational flags exit before TOML loading or operations. Retired operational CLI flags remain rejected. After normal parsing it loads TOML, creates the optional MQTT `RunReporter` with the run name/comment, and enters the operation flow.
 
 - `run(args, reporter)` — active operation coordinator. It chooses logging, attaches the MQTT error observer, enforces root before dataset/Docker/ZFS operations, reads datasets, and executes create/delete behavior in file order. Missing-dataset errors are handled by `continue_on_missing_dataset`; other checked per-dataset `zfs list`/`zfs destroy` failures are handled by `continue_on_other_failures`. A `true` policy records the failure and moves to the next dataset, then raises an aggregate final failure after normal remaining processing/log cleanup; a `false` policy stops immediately. Snapshot-create failures that are not explicit missing-dataset errors and global/config/root/input failures remain immediately fatal. Every mail path forwards the configured log prefix, run name, fallback heading, and multiline comment, including aggregate list/destroy failures. Mail failure reports are sent whenever mail is enabled; mail success reports require `[mail].on_success=true`. The same policy applies in dry-run, whose mail subjects/intro are explicitly marked as dry-run. Empty-current-`.err` cleanup remains unchanged.
 
-## `mqtt_report.py`
+## `modules/mqtt_report.py`
 
 - `MQTTPublishError.__init__(reason)` — retains a nonempty reason string and builds a credential-free parent exception message.
 - `MQTTPublishError` — parent-side MQTT worker failure type carrying only a sanitized exception-class reason; it deliberately excludes worker exception text and credentials.
 ### Constants
 
-- `DEFAULTS` — default MQTT port/title/auth/QoS/TLS/certificate/timeout settings plus `on_success=false`, used only when MQTT is enabled.
-- `SUPPORTED_KEYS` — exact accepted TOML `[mqtt]` keys after the top-level `enabled` switch has been removed by `load_app_config()`.
+- `DEFAULTS` — private normalized worker defaults, not extra TOML options. Public completion success policy comes from SendMQTTOnSuccess (default true).
+- `SUPPORTED_KEYS` — the exact 22 canonical [mqtt] options. MQTT_JSON_Status is the sole completion enable; LiveMQTTEnabled is independent.
 - `OPTIONAL_STRING_KEYS` — optional string fields that may be represented by `""` in TOML because TOML has no `null` value. Empty strings are normalized to `None` before publishing.
 
 ### Classes and functions
 
-- `validate_config(supplied, base_dir, dry_run=False, enabled=True)` — validates TOML-sourced MQTT settings. Unsupported keys are rejected even when disabled. When disabled, no broker details or Paho dependency are required. When enabled, it validates broker/topic/QoS/timeout/TLS/auth/`on_success`, resolves TLS files relative to the TOML directory, normalizes empty optional strings, and requires `paho-mqtt` even in dry-run because failure reporting remains active there.
+- `validate_config(supplied, base_dir, dry_run=False, config_path=None)` — validates TOML-sourced MQTT settings. Unsupported keys are rejected even when disabled. When disabled, no broker details or Paho dependency are required. When enabled, it validates the one shared broker/topic/QoS/timeout/TLS/auth block and SendMQTTOnSuccess, resolves TLS files relative to the TOML directory, normalizes empty optional strings, and requires `paho-mqtt` even in dry-run because failure reporting remains active there.
 
 - `ErrorCapture(logging.Handler)` — bounded in-memory collector for current-run error messages used in MQTT payloads. It avoids rereading older `.err` files and caps captured text at 4096 characters.
   - `ErrorCapture.__init__()` — configures ERROR-level capture and starts with empty text.
   - `ErrorCapture.emit(record)` — ignores separator-only messages and retains only the newest bounded error text.
 
-- `build_payload(config, command, version, exc, errors, run_id, dry_run=False, comment="", name="")` — assigns the run name to MQTT `name`/`job` (falls back to MQTT title if empty), keeps `title` separate, adds the unmodified comment as a JSON string and translates the actual process outcome into the Home Assistant JSON contract. It distinguishes success/failure exit codes, preserves nonfatal logged errors as `warning=true`, adds bounded failure/stderr text, includes command/version/run/time metadata, and exposes `dry_run=true|false` for consumers.
+- `build_payload(config, command, version, exc, errors, run_id, dry_run=False, comment="", name="")` — assigns the friendly run name to MQTT `name`/`title` (using LiveBackupName/title fallbacks if empty), makes the friendly `name`/`title` agree and fixes `job` to the stable project identifier, adds the unmodified comment as a JSON string and translates the actual process outcome into the Home Assistant JSON contract. It distinguishes success/failure exit codes, preserves nonfatal logged errors as `warning=true`, adds bounded failure/stderr text, includes command/version/run/time metadata, and exposes `dry_run=true|false` for consumers.
 
 - `publish_report(config, payload)` — launches the Python module in source mode, or re-executes the application binary with the private worker switch when frozen. A subprocess timeout bounds delivery; broker settings and payload travel over stdin, keeping credentials off argv. Only a validated exception-class reason is surfaced; arbitrary worker text is excluded from logs.
 
@@ -108,16 +108,16 @@ This map describes the current application, why each function/class exists, and 
 
 - `worker()` — child-process Paho publisher. It reads its request from stdin, constructs optional username/password auth and verified TLS context, then publishes exactly one non-retained message.
 
-- module `__main__` guard — accepts only the private internal `--publish` worker switch. This is not a public application flag; users run `SnapBeforeWatchTower.py -c CONFIG`. Any other direct invocation of `mqtt_report.py` exits.
+- module `__main__` guard — accepts only the private internal `--publish` worker switch. This is not a public application flag; users run `SnapBeforeWatchTower.py -c CONFIG`. Any other direct invocation of `modules/mqtt_report.py` exits.
 
 ## External commands and why they exist
 
 - `zfs snapshot DATASET@SnapBeforeWatchTower-Date-...` — creates the managed recovery point requested by `command="create"`.
 - `zfs list -H -t snapshot -o name DATASET` — obtains current snapshot names for safe, explicit retention calculation. It is intentionally non-recursive and also runs in dry-run.
 - `zfs destroy SNAPSHOT` — destroys only managed snapshots selected by both count-floor and age rules; suppressed in dry-run.
-- `docker images --digests` — records the current local Docker image/digest inventory before snapshots during a real `create` run. Failure is nonfatal.
+- `docker images --digests` — records the current local Docker image/digest inventory before snapshots during a real `create` run. A nonzero Docker result or digest-file write failure is logged and nonfatal; failure to launch Docker propagates and is fatal.
 - `mail -s SUBJECT [--attach FILE ...] RECIPIENT` — optional local email notification transport; enabled only by TOML `[mail]` settings.
-- `[python, -B, mqtt_report.py, --publish]` — private bounded MQTT child process. `--publish` is internal-only and is never a user-facing SnapBeforeWatchTower flag.
+- `[python, -B, modules/mqtt_report.py, --publish]` — private bounded MQTT child process. `--publish` is internal-only and is never a user-facing SnapBeforeWatchTower flag.
 
 ## `tests/test_app.py`
 
@@ -181,32 +181,32 @@ This map describes the current application, why each function/class exists, and 
   - `test_worker_failure_reason_is_logged_without_exception_text()` — verifies a safe worker exception class is logged while broker/credential details remain absent.
   - `test_success_reporting_respects_on_success_in_real_and_dry_run()` — verifies MQTT success reports are suppressed when `on_success=false` and published when `on_success=true`, identically for real and dry-run executions.
   - `test_failure_reporting_ignores_on_success_in_real_and_dry_run()` — verifies MQTT failures publish even when `on_success=false`, identically for real and dry-run executions.
-  - `test_reporter_publishes_once_and_does_not_mask_failure()` — verifies one failure report while the original exception still propagates.
+  - `test_reporter_publishes_once_and_does_not_mask_failure()` — verifies one failure report while the original exception still propagates; logger messages are not fabricated child stderr.
   - `test_publish_errors_preserve_original_outcome()` — verifies MQTT delivery failure is sanitized and never changes the underlying operation outcome.
 
 ## Configuration and integration files
 
-- `config-example.toml` — loadable, fully commented example containing every supported `[application]`, `[mail]`, `[mqtt]`, `[logging]`, and `[report]` setting. It defaults to dry-run with mail and MQTT disabled for a safer first copy.
-- `config.example.md` — supplemental human-readable reference for the current TOML-driven interface. It documents `-c CONFIG`, `-h`/`--help`, `--version`, and every supported TOML setting, but is never parsed by the application.
-- `datasets.example.txt` — minimal two-line example of the dataset-list format consumed by `dataset_file`.
-- `requirements-mqtt.txt` — optional Paho MQTT dependency list required whenever `[mqtt].enabled=true`, including dry-run because failures still publish.
+- `configs/config-example.toml` — loadable, fully commented example containing every supported `[application]`, `[mail]`, `[mqtt]`, `[logging]`, and `[report]` setting. It defaults to dry-run with mail and MQTT disabled for a safer first copy.
+- `configs/config.example.md` — supplemental human-readable reference for the current TOML-driven interface. It documents `-c CONFIG`, `-h`/`--help`, `--version`, and every supported TOML setting, but is never parsed by the application.
+- `configs/datasets.example.txt` — minimal two-line example of the dataset-list format consumed by `dataset_file`.
+- `requirements-mqtt.txt` — optional Paho MQTT dependency list required when MQTT_JSON_Status or LiveMQTTEnabled is true, including dry-run because failures still publish.
 - `requirements-build.txt` — pinned build-only dependency list containing PyInstaller and Paho MQTT.
 - `SnapBeforeWatchTower.spec` — one-file PyInstaller recipe; `collect_submodules('paho')` ensures all MQTT modules are bundled even though the application validates/imports Paho dynamically.
 - `build-pyinstaller.sh` — reproducible build entry point. It recreates one gitignored `.build-pyinstaller/` workspace containing `venv/`, `pip-cache/`, PyInstaller `work/`, and PyInstaller `config/`; removes legacy root-level `build/` and `.venv-build/` locations; cleans every generated/stale `dist/` entry except the tracked `dist/README.md`; builds the one-file executable with explicit `--workpath`/`--distpath`; checks `--help`/`--version`; and fails unless `dist/` contains exactly `SnapBeforeWatchTower` and `README.md`.
 - `dist/README.md` — tracked build-output note kept beside the generated executable. The build script preserves it while removing every other stale/generated `dist/` entry.
-- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` — example Home Assistant MQTT status automation for SnapBeforeWatchTower. It extracts run `name` first with legacy `title`/`job` fallbacks, places the comment below it, listens for the JSON report, sends Pushover success/failure/unknown notifications, and displays the payload `dry_run` mode as `DRY-RUN` or `LIVE`.
+- `homeassistant/SnapBeforeWatchtower-mqtt-persistent-notification.yaml` — example Home Assistant MQTT status automation for SnapBeforeWatchTower. It displays the friendly title/name, bounded comment and diagnostics, listens for the typed JSON report, sends bounded Pushover success/failure/unknown notifications, and rejects dry-runs before real notifications; it uses the same typed, bounded completion actions as the supplied example.
 - `SAFETY.md` — contains the project disclaimer/liability text requested for SnapBeforeWatchTower plus a project-specific destructive ZFS/log-retention warning and the existing no-license notice.
-- `.gitignore` — excludes private operational `config*` files, runtime dataset/list files, logs, Python caches, legacy build locations, and the complete generated `.build-pyinstaller/` workspace while explicitly unignoring the shipped `config-example.toml`, `config.example.md`, `datasets.example.txt`, and `dist/README.md` files so they remain trackable.
+- `.gitignore` — excludes private operational `config*` files, runtime dataset/list files, logs, Python caches, legacy build locations, and the complete generated `.build-pyinstaller/` workspace while explicitly unignoring the shipped `configs/config-example.toml`, `configs/config.example.md`, `configs/datasets.example.txt`, and `dist/README.md` files so they remain trackable.
 
 ## Additional existing test functions
 
 - `test_optional_log_report_defaults_preserve_existing_configs()` — checks older configs receive basename logging and empty shared report values.
-- `test_report_title_precedence_and_comment_newlines_from_toml()` — checks shared MQTT-title precedence and basic/literal/multiline TOML comment decoding.
+- `test_report_title_precedence_and_comment_newlines_from_toml()` — checks shared MQTT fallback-title precedence and basic/literal/multiline TOML comment decoding.
 - `test_invalid_log_report_values_fail_before_operations()` — rejects invalid types, paths, glob syntax, multiline headings, unknown keys, and NUL before work.
 - `test_custom_prefix_log_files_and_retention_keep_other_prefixes()` — proves custom-prefix file creation and age/count cleanup leave other prefixes alone.
 - `test_custom_prefix_digest_filename()` — checks Docker inventory shares the selected prefix.
 - `test_email_title_and_multiline_comment_precede_current_report()` — checks email content and exact-prefix attachment selection.
-- `test_main_propagates_log_prefix_and_shared_report_in_success_and_failure()` — exercises the real loader/coordinator on success, continued list/destroy failure, missing dataset, fatal error, and root refusal; checks the run name, independent MQTT title, mail metadata, and unchanged subjects.
+- `test_main_propagates_log_prefix_and_shared_report_in_success_and_failure()` — exercises the real loader/coordinator on success, continued list/destroy failure, missing dataset, fatal error, and root refusal; checks the run name, configured MQTT fallback title, mail metadata, and unchanged subjects.
 - `test_fixed_log_folder_has_no_temporary_fallback()` — checks fixed placement for non-root callers and propagation of directory failure.
 - `test_unwritable_logs_prevent_external_operations()` — proves log initialization failure prevents command/mail execution.
 - `test_empty_prefix_uses_actual_source_or_frozen_basename()` — checks source, frozen, and unusual executable-name fallback handling.
@@ -221,7 +221,7 @@ This map describes the current application, why each function/class exists, and 
 - `pyinstaller --noconfirm --clean --workpath ... --distpath ... SnapBeforeWatchTower.spec` — rebuilds the one-file delivery; work/config are isolated. `Analysis` gathers source and Paho imports, `PYZ` packages modules, and `EXE` creates the console executable without UPX. `--help`/`--version` then smoke-test it.
 - Frozen private `[executable, --mqtt-publish-worker]` — counterpart to the source MQTT child command; keeps credentials on stdin and applies the same parent timeout.
 - README commands `cp`, `nano`, and `chmod 600` prepare private operational files; `sudo python3 ... -c CONFIG` or `sudo ./dist/SnapBeforeWatchTower -c CONFIG` runs the reviewed job. `python3 -B -m unittest discover -s tests -v` runs offline tests without bytecode. `sha256sum -c manifest.sha256` verifies packaged file integrity.
-- `AsusN14E-snaplist`, `Storage-Docker-Cleanup` — preserved original host-specific dataset lists, not executable cleanup scripts. Only read if configured as `dataset_file`.
+- `config.toml`, `datasets`, `AsusN14E-snaplist`, `Storage-Docker-Cleanup` — private runtime inputs excluded from distribution and explicitly ignored, including lowercase host-list names. Create local inputs from configs/ examples; the app reads only the configured dataset_file.
 - `VERSIONING.md` — complete canonical release history. `versioning.md` is an identical lowercase compatibility copy, kept synchronized for the requested filename.
 - `VERIFICATION.md` — release-specific checks and limitations. `manifest.sha256` covers every delivered project file except itself; `PACKAGE_MANIFEST.md` compares final paths/content with the supplied archive.
 - MQTT module `__main__` error guard catches worker exceptions, prints only their class name, and exits 1, preventing broker/credential text from leaking to the parent.
@@ -232,6 +232,132 @@ This map describes the current application, why each function/class exists, and 
 
 - `test_report_name_loads_without_mqtt_and_is_optional()` — checks trimming, Unicode names, empty/whitespace fallback, and use with MQTT disabled.
 - `test_email_run_name_then_comment_and_subject_unchanged()` — checks actual mail-helper output starts with name then the exact multiline comment, precedes outcome/logs, selects the configured attachments, and preserves success/failure subjects.
-- `test_payload_run_name_is_independent_of_title_with_legacy_fallback()` — checks named and unnamed success/failure MQTT payloads retain the independent title and compatible name/job fallback.
+- `test_payload_friendly_name_title_and_stable_job_with_legacy_fallback()` — checks named and unnamed success/failure MQTT payloads use matching friendly name/title and the stable project job ID.
 - `test_reporter_sends_run_name_for_real_and_dry_success_and_failure()` — checks the full reporter passes the configured name in live/dry-run success/failure messages without changing result semantics.
 - Existing invalid-report, legacy-default, shipped-example, public-help, combined coordinator, and JSON/worker tests also cover the name field and reject invalid names before operations.
+
+## Build helper interface and validation checks
+
+- `build-pyinstaller.sh -h` / `--help` — prints requirements, all public build flags, cleanup paths, and output checks. Runs before any cleanup/installation so inspecting help cannot replace an executable or create a build directory.
+- `build-pyinstaller.sh --version` — uses `python3 -B -c` and the standard-library `ast` module to read the literal `__version__` assignment from `SnapBeforeWatchTower.py`. It does not import application code, install dependencies, or create bytecode. Sharing the source version avoids a second version constant.
+- The shell argument guard requires exactly one informational flag when arguments are present. Unknown flags, positional arguments, and flag combinations exit 2 before build work. With no arguments, the existing build and two-file `dist/` safety checks execute unchanged.
+- `test_invalid_command_types_fail_before_operations_or_notifications()` — loads real TOML arrays, inline tables, booleans, and numbers through `main()` and verifies configuration exit 2 before the operation coordinator or reporter starts. This prevents an unhashable command from escaping validation as a traceback.
+- `test_out_of_range_retention_fails_before_operations_or_notifications()` — checks a normal duration plus oversized days/weeks/months, a timedelta-valid but calendar-invalid cutoff, and a very long integer. Verifies the shared parser gives a controlled error and the CLI stops before work/reporting, avoiding a snapshot being created before cutoff arithmetic fails.
+- MQTT test payload/reporter fixtures use `app.__version__` so the injected current version stays synchronized with source metadata.
+- The Home Assistant YAML filename is preserved; its three delivery actions use `notify.pushover`, so the user must configure that service or adapt each action to their selected notification service.
+
+## Integrated reporting architecture
+
+`modules/mqtt_report.py` remains the application adapter and existing bounded completion
+publisher. `modules/mqtt_reporting.py` is the supplied generic live engine, with usage
+instructions in its module docstring. The app has small observer calls around
+existing work. Dataset-list processing, create/delete order, retention selection,
+commands, root checks, continuation policy, mail behavior and scheduling are not
+reimplemented. Context-local observation keeps unrelated threads/imported calls
+from being attributed to a run. It captures only actual child stderr, in order,
+with a 4000-character tail; ErrorCapture log text is a separate warning detail.
+
+The canonical [mqtt] options are the only public reporting configuration.
+Removed duplicate names are rejected with replacement guidance; no hidden
+legacy enable or credential block can override the selected connection. The actual process
+exit code is authoritative: unhandled command exceptions remain app exit 1;
+child_exit_code preserves a distinct failing child result. SystemExit and
+KeyboardInterrupt are observed without suppressing or replacing them.
+
+### `modules/mqtt_report.py` adapter changes
+
+- `REPORTING_KEYS` — exact additional option names accepted in the existing [mqtt] table, keeping unknown-key validation explicit.
+- `validate_config()` — validates the two independent canonical channel switches, rejects removed duplicate options, normalizes the one shared broker/auth/topic/TLS/certificate block and validates dependency availability, preserves literal passwords, stores config identity and independent completion/live flags, and validates the live engine before operations. Returns None when both channels are disabled.
+- `build_payload()` — emits the required typed completion contract with matching friendly name/title and stable job. It reports the process outcome, captures actual exception stderr only as a fallback, and keeps logger text out of stderr. It preserves version/operation/comment and warning-detail extensions.
+- `RunReporter.__enter__()` — installs the context-local observer and independently starts the live engine when enabled, sharing its run_id with completion. It does not start a job or add scheduling/locking.
+- `RunReporter.update()` — forwards measured progress and suppresses observer failures so reporting cannot alter job behavior.
+- `RunReporter.plan()` — records the configured dataset entries and known total after the original input file has been read.
+- `RunReporter.begin_item()` — identifies the current dataset occurrence and its create/retention phase; duplicate names retain separate integer IDs.
+- `RunReporter.end_item()` — counts one attempted entry and records its success or failure separately. It does not count unattempted/skipped entries as completed.
+- `RunReporter.capture_command()` — appends actual child stderr, remembers a failing child's separate code/command, and counts successful real snapshot/destroy commands or explicit dry-run plans. It cannot execute or retry any job command.
+- `RunReporter.__exit__()` — restores the observer context, detaches log capture, finalizes measured outcomes (including pending skips), sends retained live last_result and independently attempts the existing completion publisher. Every path returns False, preserving the original exception/process exit. Broker failures are logged without replacing that result.
+
+### `modules/mqtt_reporting.py` functions and methods
+
+- `_now()` — formats an actual UTC timestamp for payloads/heartbeats.
+- `_json()` — serializes valid UTF-8, finite JSON in memory for MQTT/stdin; never writes a file.
+- `_text()` — decodes captured bytes safely and rejects invented/non-text diagnostic values.
+- `capture_command()` — routes a child result or explicit dry-run plan to the current context observer, swallowing instrumentation failures to preserve application semantics.
+- `MQTTReporter` — generic, in-memory MQTT live/optional completion engine. Its defaults have no dataset fields.
+- `MQTTReporter.__init__()` — loads a TOML [mqtt] table or validated in-memory settings, validates flags/identity/broker/heartbeat, creates per-host/job/config identity and separate live/result/event topics, and starts unknown measurements as null.
+- `MQTTReporter._snapshot()` — takes an in-memory JSON-safe copy with actual runtime, heartbeat, job_type/item_unit, item outcome counts, explicit expiry and no estimated transfer measurements.
+- `MQTTReporter.snapshot()` — returns that copy under the state lock for concurrent readers.
+- `MQTTReporter.start()` — marks the run running and starts only the enabled live heartbeat thread, optionally queueing a start event. It is idempotent and does not execute application work.
+- `MQTTReporter.update()` — accepts validated labels, measured nonnegative counters/rates/bytes or null, rejects completed > total, and calculates a percentage only from known completed/total.
+- `MQTTReporter.append_stderr()` — maintains the latest 4000 actual stderr characters in memory.
+- `MQTTReporter.record_item()` — records success/failure/skipped rows by stable item ID independently of generic attempted/total counters, so duplicate dataset lines and generic file/task jobs work correctly.
+- `MQTTReporter.finish()` — validates integer exit/boolean warning, builds the required generic completion contract, marks failure/interruption/incomplete truthfully, stops periodic sending, then performs a bounded final state/retained result/event send. It never forces completed=total or 100 percent.
+- `MQTTReporter.close()` — cancels bounded worker activity and joins the heartbeat thread without inventing a final outcome. A lost process is handled by HA expiry.
+- `MQTTReporter._discovery()` — creates retained per-device sensor configuration, configurable manufacturer, unique IDs and stable status/last_result attribute role markers. Live sensors expire; last_result does not.
+- `MQTTReporter._live_loop()` — throttles updates, sends measured heartbeats, retries discovery periodically, and preserves unsent lifecycle events on a canceled/failed send. Final results are owned by finish() so short runs do not lose them.
+- `MQTTReporter._send()` — runs a killable five-second worker with credentials on stdin, never argv, and reaps timed-out/canceled children. Reports delivery failure without leaking raw transport exception text.
+- `run_worker_if_requested()` — private source/frozen worker dispatch before normal CLI parsing. It imports bundled Paho, reads stdin JSON, builds verified TLS (including existing CA/client certificate options) and publishes on the specified topics without application work.
+
+### Commands, configuration and templates
+
+- `[python, -B, modules/mqtt_reporting.py, --mqtt-reporting-worker]` or `[frozen executable, --mqtt-reporting-worker]` — internal live transport; no new public job command. Existing completion `--publish` / frozen `--mqtt-publish-worker` workers remain in use.
+- `configs/config-example.toml` — the sole loadable complete configuration example, with all 36 options and placeholders. Private config.toml is not shipped; create it by copying this example. Config values and path-resolution rules are unchanged.
+- `homeassistant/success-failure-automation.yaml` — supplied completion/Pushover example on the existing project topic; ignores previews before real actions, validates typed agreement, includes diagnostics and bounds messages to Pushover limits. This is an example, not an installed sequence.
+- `homeassistant/live-preview-card.yaml` — supplied `type: markdown` / `content: |` card, adapted to the emitted generic item schema and measured ZFS snapshot counters. It discovers a configurable manufacturer, identifies renamed entities by stable roles, shows reasons/stderr/runtime/heartbeat/history, hides null transfer sections and identifies a newer lost run honestly.
+- Original HA automation filename — preserved as an alternative; its early guard rejects dry-runs and its actions match the typed, bounded supplied completion example. Enable only one completion notification automation per topic.
+- No sample JSON/config/state/cache/log files are introduced. Existing app logs/digest files remain required original behavior.
+
+### Integration regression tests
+- `IntegratedReportingTests` — Exercise real coordinator/report adapter with storage and transport isolated.
+- `IntegratedReportingTests.settings` — Builds an isolated MQTT config with explicit channels for boundary tests.
+- `IntegratedReportingTests.test_typed_completion_matches_process_codes_and_contains_no_dataset_sections` — Verifies typed completion matches process codes and contains no dataset sections without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_canonical_shared_connection_and_channels_are_independent` — Verifies one canonical connection/topic and independent completion/live enables without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.run_observed_job` — Use original operations with deterministic child results and no external work.
+- `IntegratedReportingTests.run_observed_job.child` — Returns deterministic child results or actual captured-error fixtures without invoking ZFS/Docker.
+- `IntegratedReportingTests.run_observed_job.transport` — Captures emitted live messages in memory instead of publishing them.
+- `IntegratedReportingTests.test_fatal_snapshot_keeps_job_failure_and_child_code_stderr_and_unattempted_items` — Verifies fatal snapshot keeps job failure and child code stderr and unattempted items without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_continued_failure_counts_attempts_separately_and_duplicate_entries` — Verifies continued failure counts attempts separately and duplicate entries without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_dry_run_previews_capture_real_lists_and_never_create_destroy_or_transfer` — Verifies dry run previews capture real lists and never create destroy or transfer without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_disabled_and_live_only_and_completion_only_are_independent` — Verifies disabled and live only and completion only are independent without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_broker_failures_and_interrupts_preserve_process_outcome` — Verifies broker failures and interrupts preserve process outcome without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_unknown_progress_and_generic_items_have_no_dataset_assumptions` — Verifies unknown progress and generic items have no dataset assumptions without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_discovery_identity_manufacturer_and_roles_survive_sensor_renaming` — Verifies discovery identity manufacturer and roles survive sensor renaming without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_live_worker_failure_is_bounded_credentials_off_argv_and_reaped` — Verifies live worker failure is bounded credentials off argv and reaped without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_live_worker_verified_tls_and_no_retained_completion_or_events` — Verifies live worker verified tls and no retained completion or events without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_actual_harmless_child_stderr_is_captured_without_fabricated_log_text` — Verifies actual harmless child stderr is captured without fabricated log text without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_actual_harmless_child_stderr_is_captured_without_fabricated_log_text.child` — Returns deterministic child results or actual captured-error fixtures without invoking ZFS/Docker.
+- `IntegratedReportingTests.test_live_heartbeat_and_event_switches_without_completion_reports` — Verifies live heartbeat and event switches without completion reports without production storage, broker delivery or a Home Assistant installation.
+- `IntegratedReportingTests.test_live_heartbeat_and_event_switches_without_completion_reports.send` — Collects heartbeat packets and signals when a measured update arrives.
+- `HomeAssistantTemplateTests` — Render actual YAML/Jinja using a local HA facade; never access an installation.
+- `HomeAssistantTemplateTests.setUp` — Loads optional offline YAML/Jinja tooling and approximates the HA boolean filter; skips only these template tests when tooling is absent.
+- `HomeAssistantTemplateTests.setUp.boolean` — Approximates the HA bool filter for offline template rendering.
+- `HomeAssistantTemplateTests.test_completion_automation_typed_contract_dry_run_guard_and_pushover_limits` — Verifies completion automation typed contract dry run guard and pushover limits without production storage, broker delivery or a Home Assistant installation.
+- `HomeAssistantTemplateTests.render_card` — Renders the actual Markdown card with renamed role-marked sensors and simulated live/history attributes.
+- `HomeAssistantTemplateTests.render_card.States` — Local fixture implementing the HA states facade for template checks.
+- `HomeAssistantTemplateTests.render_card.States.__call__` — Returns the simulated HA entity state for template lookups.
+- `HomeAssistantTemplateTests.render_card.timestamp` — Converts fixture dates to epoch timestamps for heartbeat expiry checks.
+- `HomeAssistantTemplateTests.test_card_uses_roles_project_fields_generic_items_and_null_measurements` — Verifies card uses roles project fields generic items and null measurements without production storage, broker delivery or a Home Assistant installation.
+- `HomeAssistantTemplateTests.test_card_lost_heartbeat_interrupts_and_retained_history_are_honest` — Verifies card lost heartbeat interrupts and retained history are honest without production storage, broker delivery or a Home Assistant installation.
+
+- `IntegratedReportingTests.test_live_observer_errors_cannot_replace_job_failure_or_block_completion()` — injects live startup/shutdown failures and verifies the original exception and independent completion failure report survive.
+
+- `IntegratedReportingTests.test_main_loads_template_config_and_reports_real_measured_dry_run()` and nested `transport()` — run the real TOML loader/main adapter with new independent flags enabled, fake only storage/transport, and verify matching run IDs, preserved topic, real stderr and one measured dataset outcome.
+
+## Package and example layout
+
+- `modules/__init__.py` — marks the supporting-code directory as a Python package without importing or executing application work.
+- Root `SnapBeforeWatchTower.py` imports `modules.mqtt_report` / `modules.mqtt_reporting`, keeping the public command and source log directory unchanged.
+- `modules.mqtt_report` uses a relative sibling import for normal package/frozen execution. When the source completion worker runs by absolute file path, it imports its sibling module from the worker directory. This preserves the bounded private worker command and works independently of the caller's working directory without injecting search paths.
+- `modules/mqtt_reporting.py` remains self-contained when used as the absolute-path source live worker. Frozen workers still re-execute the root executable with the existing private flags.
+- All examples are under `configs/`: config-example.toml, config.example.md and datasets.example.txt. `.gitignore` explicitly unignores the example directory/files despite its broad config* privacy pattern.
+- Root `config.toml` and the host-specific dataset lists are intentionally absent; all requested private filenames (including datasets, already absent in the prior release) are ignored. Example dataset/TOML values, job commands, notification behavior, and all other safety settings are unchanged.
+
+## Single completion reporting configuration
+
+- `REMOVED_KEYS` — migration map for duplicate legacy MQTT option names. Validation rejects them before dependency checks or job work, avoiding a second enable or conflicting credentials.
+- `RunReporter.completion_payload(exc)` — one shared application completion builder, reused by live finalization and the sole completion send path. Adds actual planned/failed/skipped dataset source records, occurrence IDs and reasons independently of live preview. Generic build_payload/MQTTReporter continue to avoid dataset-specific fields.
+- `RunReporter.end_item()` — now remembers failed source records for completion-only jobs and uses actual exception stderr (latest 4000 characters), falling back to the real exception message/type when unavailable. It still counts attempted items separately from skipped outcomes.
+- `IntegratedReportingTests.test_removed_duplicate_options_are_rejected_before_job_work()` — checks every removed option and proves an old [mqtt].enabled config exits 2 before operations rather than silently selecting another reporting channel.
+- `IntegratedReportingTests.test_single_connection_credentials_are_shared_in_all_canonical_enable_modes()` — tests all four canonical enable combinations and compares the exact broker/port/username/password used by live and completion, including meaningful password whitespace. Verifies standalone JSON without the example wrapper.
+- `IntegratedReportingTests.test_dataset_diagnostics_exist_with_completion_only_and_do_not_invent_destinations()` — exercises successful and failing actual coordinators with mocked storage and live disabled; verifies typed result/exit codes, configured sources, real failure reasons, unattempted skips and no fabricated backup destination.
+- The root configuration loader passes [mqtt] directly to canonical validation; [report].title remains a mail/friendly fallback outside MQTT configuration. Startup policy logs name MQTT_JSON_Status, SendMQTTOnSuccess and LiveMQTTEnabled explicitly.

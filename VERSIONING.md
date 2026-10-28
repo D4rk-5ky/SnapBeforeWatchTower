@@ -1,8 +1,67 @@
 # Versioning and complete change log
 
-`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.16. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
+`SnapBeforeWatchTower.py::__version__` is the application version embedded in release metadata and MQTT reports. The current release is 0.0.20. Normal operation remains TOML-driven with `-c CONFIG`; the public CLI also exposes informational `-h`/`--help` and `--version` flags.
 
 Each new created release advances by one patch step. The patch component ranges from 0 through 99: `0.0.98 -> 0.0.99 -> 0.1.0 -> 0.1.1`. Never emit `0.0.100`. Do not invent releases for intermediate edits while preparing a single release. Update this file with every release and record every code change, documentation change, and added file. Keep README.md focused on current usage and keep configuration examples and commented_code_map.md synchronized.
+
+## 0.0.20 — 2026-10-27
+
+### One JSON completion channel and an independent shared-credential live channel
+
+- Increment 0.0.19 to 0.0.20, exactly one patch step. Preserve prior history, file layout, private-file ignore rules, disclaimers, commands, scheduling, job exit codes, storage/safety logic and HA topics.
+- Make MQTT_JSON_Status the sole completion-report enable; LiveMQTTEnabled independently enables live sensors/events. Both use one canonical broker_address/broker_port/mqtt_username/mqtt_password/MQTTTLS/certificate configuration. SendMQTTOnSuccess controls only successful completion messages; failures report whenever completion is enabled. Omitted channel enables default false and success reporting defaults true when completion is enabled.
+- Remove duplicate public MQTT enabled/on_success/host/port/topic/username/password/tls/title options. Reject old names, even while disabled, with explicit canonical replacement guidance before job work. Keep private normalized worker fields internally so existing bounded transports can be reused, not duplicated. [mail] switches and every other config section remain unchanged.
+- Pass the single [mqtt] table directly into validation, keep [report].title as an independent mail/friendly fallback, and label startup policy logs with the actual canonical switches. Preserve literal shared credentials, verified TLS/certificate paths, completion topic/QoS/timeouts and live transport semantics.
+- Reuse one RunReporter.completion_payload builder for finalization and completion. Each sent message is one standalone typed success/failure object; never copy the demonstration wrapper, Syncerate job ID, destination pairs or exit code. Keep actual app exit codes and distinct failing child codes.
+- Add this dataset-based app's planned_datasets/failed_datasets/skipped_datasets extensions from actual configured entries and observed outcomes, independently of live preview. Preserve duplicate entries using item_id. Use captured command stderr/real exception reasons and no invented destination. Generic build_payload/MQTTReporter stay free of dataset-specific sections. Move current-item failure finalization outside the live-only branch so completion-only interrupted/fatal jobs remain accurate.
+- Replace config/example comments with the single canonical 22-key MQTT table (36 keys across all sections), preserving the prior canonical topic and every retained setting/non-MQTT value. Update module usage, README, optional dependency comment, code map and binary docs; preserve the existing HA automation/card schema and behavior.
+- Update existing test fixtures to use canonical settings without removing regression cases; add duplicate-key migration rejection, all-four-mode shared-credential checks, and completion-only actual dataset diagnostics tests. Rebuild the standalone executable with the same dependency pins, and refresh clean ZIP/checksum/manifest/verification deliverables.
+
+## 0.0.19 — 2026-10-27
+
+### Requested private-file removal and folder layout
+
+- Increment 0.0.18 to 0.0.19, exactly one patch step. Preserve all prior release entries and both disclaimer sections unchanged.
+- Remove distributed config.toml, Storage-Docker-Cleanup and AsusN14E-snaplist as explicitly requested. The private datasets file was already absent; keep it absent. Ignore config.toml, datasets, both original host-list names and their lowercase spellings. Earlier release archives are preserved.
+- Move config-example.toml, config.example.md and datasets.example.txt into configs/. Add .gitignore exceptions for the directory and these examples so the broad config* privacy rule does not hide them. Keep every one of the 45 TOML setting values and all MQTT topics unchanged.
+- Move mqtt_report.py and mqtt_reporting.py into modules/, add the minimal modules/__init__.py package marker, and update the root CLI/tests to qualified package imports. Preserve SnapBeforeWatchTower.py as the root command entry point, with the same source log location, CLI flags and config path resolution.
+- Adapt the completion adapter's sibling import for both package/frozen execution and direct absolute-path source worker execution. Preserve source/frozen worker commands, credentials-on-stdin, bounded transport, completion/live independence, payloads and job logic.
+- Update existing tests to load configs/config-example.toml and patch the qualified module imports; no existing regression case is removed. Update README, configuration comments/reference, code map and binary documentation for the current layout and private-file setup. Keep usage instructions in modules/mqtt_reporting.py.
+- Rebuild the standalone executable at its existing dist path using the unchanged spec and pinned dependency versions. Refresh package/verification/hash manifests; explicitly record approved removals and five moves, and retain all other original necessary files. No cache, bytecode, build state, private runtime file or temporary material is packaged.
+
+## 0.0.18 — 2026-10-27
+
+### MQTT template integration
+
+- Increment 0.0.17 to 0.0.18, exactly one patch step. Preserve prior history, disclaimers, original files and all storage/job commands, retention/continuation policies, root requirement, application exit behavior and external scheduling.
+- Add the supplied `mqtt_reporting.py`, adapted to generic `record_item` outcomes and explicit job_type/item_unit. Keep its usage instructions in the module and settings/install notes in config/YAML comments. Do not copy the template's two sample JSON files; no JSON config/state/cache/log files are introduced.
+- Keep `mqtt_report.py` as the existing app adapter and bounded completion publisher. Normalize supplied option names into the validated legacy broker/TLS/auth/topic settings; explicit new aliases override matching legacy settings. Old-only configs keep their previous topic/enables/success policy. Completion and live enables are independent, including dry-run live previews. Preserve verified TLS, certificate paths, QoS, completion timeout, credential-safe stdin workers and non-masking reporting failures.
+- Upgrade final JSON to matching friendly name/title, stable job=SnapBeforeWatchTower, status=success/failure, real boolean success/warning/dry_run, integer process exit_code, error/stderr strings, run_id/timestamp/host. Preserve version/command/comment/finished_at extensions. Keep warning log text in warning_detail; use actual captured child stderr only (latest 4000 characters). Preserve the latest failing child's return code/command separately; uncaught job exceptions still produce the original process code 1. SystemExit codes and KeyboardInterrupt 130 stay meaningful.
+- Add a ContextVar observer and small hooks after existing child commands, plus coordinator hooks around existing dataset processing. No child command or retention selector is duplicated. Track real/planned snapshot actions and attempted dataset entries; preserve duplicate lines with distinct item IDs. Keep generic successful_items/failed_items/skipped_items and counts separate from completed/total. Mark unattempted entries skipped on abort; unknown totals/bytes/rates/percentages remain null and finish never forces 100%.
+- Keep live discovery identities unique by host/job/config path or a unique explicit override, configurable manufacturer and stable status/last_result role markers. Heartbeats expire; live state/events are non-retained, last_result/discovery retained. Stop/cancel background sends before a bounded final result send, avoiding lost final packets on short runs. Interrupts/incomplete runs/lost heartbeats do not fabricate success.
+- Add the supplied Markdown `homeassistant/live-preview-card.yaml` with generic labels, ZFS snapshot counters, item outcome reasons/stderr/runtime/heartbeat/retained history, manufacturer discovery and role-based renamed sensor handling. Hide unmeasured transfer sections and distinguish a stale newer run from historical results.
+- Add the supplied `homeassistant/success-failure-automation.yaml`, preserve this project's existing completion topic, validate typed status/success/exit agreement, bound Pushover title/message lengths and include warnings, errors and stderr. Ignore dry-runs before any real notification/sequencing action. Keep the original HA filename with the same bounded, typed, dry-run-guarded completion logic; no installation or notification is performed here.
+- Add safe full `config.toml` because the input has only config examples; merge [mqtt] options while preserving every non-MQTT setting and original legacy topic. Update both existing config references with all options and placeholder credentials. Keep private-config gitignore protection.
+- Update README for current behavior, extend the code map, keep both version histories identical, rebuild the existing standalone executable with pinned dependencies, and refresh verification/manifests/checksums. Add regression coverage for schema types, aliases, independent modes, real harmless child stderr, dataset and generic item behavior, failure/abort/continuation/interrupt/dry-run progress, bounded broker failure workers, TLS, discovery roles/identity, heartbeat/events, and offline YAML/card/Pushover behavior.
+
+## 0.0.17 — 2026-10-27
+
+### Code and validation
+
+- Advance 0.0.16 to 0.0.17, exactly one patch step; keep the 99-to-next-minor rollover policy.
+- Require `[application].command` to be a string before set membership, so TOML arrays/inline tables produce the existing controlled validation error instead of an unhandled TypeError. Valid commands and their behavior stay the same.
+- Reuse `parse_older_than()` for duration and cutoff-range validation. Catch integer-conversion/duration overflow and reject a cutoff earlier than Python year 1 as `argparse.ArgumentTypeError`; the loader converts this into a configuration error and CLI exit 2 before any Docker/snapshot work, logging or reporting. Keep days/weeks/30-day months and all ordinary retention rules unchanged.
+- Add `-h`/`--help` and `--version` to `build-pyinstaller.sh` before any cleanup or installation. Require informational options to be used alone; unknown/combined arguments exit 2. Read the source version with Python AST, without importing the app or duplicating the version number. Preserve the no-argument build recipe and output checks unchanged.
+- Add two configuration-boundary regression tests, update the exact CLI version assertion, and use `app.__version__` in existing MQTT fixtures instead of stale release literals. No dependency/schema/payload changes.
+
+### Documentation and delivery
+
+- Keep README about current usage: identify current release, explain every build option and its no-work behavior, describe range/type errors and configuration-report limits, and clarify that the preserved Home Assistant example uses Pushover actions despite its filename.
+- Update all configuration examples for the validated age range and string command; preserve every setting and dry-run/disabled-notification defaults.
+- Update `commented_code_map.md` for the parser/loader/build interface and both tests; correct Docker failure distinctions and explain Home Assistant action requirements.
+- Preserve both supplied disclaimer sections verbatim, `SAFETY.md`, original dataset lists, `.gitignore`, dependency pins, PyInstaller spec, Home Assistant YAML, and all original project paths. Preserve the entire prior history and keep `versioning.md` byte-identical to `VERSIONING.md`.
+- Rebuild the existing standalone executable from the current source using the pinned PyInstaller/Paho versions; document build platform and test limits in `dist/README.md` and `VERIFICATION.md`.
+- Refresh `PACKAGE_MANIFEST.md`, `manifest.sha256`, and `VERIFICATION.md` against the actual supplied 25-file 0.0.16 archive. Deliver a clean full-project ZIP, checksum, and verification report; exclude all runtime/build/cache/bytecode/temp files. No project file is added or removed in this release.
 
 ## 0.0.16 — 2026-10-26
 

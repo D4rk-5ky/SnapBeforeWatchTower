@@ -1,0 +1,137 @@
+# SnapBeforeWatchTower 0.0.20 configuration example.
+# From the project root: cp configs/config-example.toml config.toml
+# and cp configs/datasets.example.txt datasets. Edit both private files, then run:
+#   sudo python3 SnapBeforeWatchTower.py -c config.toml
+# CLI reference: python3 SnapBeforeWatchTower.py --help
+# Version:       python3 SnapBeforeWatchTower.py --version
+# Relative dataset/TLS file paths use the TOML directory. dataset_file also expands ~.
+# The -c CONFIG path itself uses the current working directory when relative.
+
+[application]
+# Must be a TOML string. "create" creates a snapshot and then applies retention;
+# "delete" only applies retention and does not create snapshots or capture Docker digests.
+command = "create"
+
+# UTF-8 text file containing one ZFS dataset name per non-empty line.
+# Relative paths are resolved relative to this TOML file.
+# Missing-dataset continuation is controlled by continue_on_missing_dataset below.
+# A missing dataset always makes the final run a failure.
+dataset_file = "datasets"
+
+# Age cutoff for managed snapshots and log groups.
+# Use a nonnegative integer followed by d (days), w (weeks), or m (30-day months).
+# Examples: "7d", "2w", "1m", "0d".
+# The duration and computed cutoff must fit Python dates (year 1 or later).
+# Out-of-range ages are rejected before snapshot/Docker work or notifications.
+older_than = "7d"
+
+# Always protect this many newest matching snapshots per dataset and log timestamp groups.
+# Zero or a negative integer disables the count floor; age rules still apply.
+retain_count = 10
+
+# When true, preview ZFS snapshot creation/destruction and old-log deletion.
+# Dry-run still lists ZFS snapshots and writes run logs; Docker digest capture is skipped.
+# Mail and MQTT use the same notification policy as real runs: failures are reported when
+# the channel is enabled; success uses mail.on_success or mqtt.SendMQTTOnSuccess.
+dry_run = true
+
+# true = when ZFS explicitly reports a configured dataset as nonexistent, record the
+# failure and continue with the next configured dataset. false = stop immediately.
+# Either way, the final result is failure and enabled mail/MQTT reports that failure.
+continue_on_missing_dataset = true
+
+# true = for any other checked ZFS list/destroy command failure on one dataset,
+# record the failure and continue with the next configured dataset. false = stop
+# immediately. This does not make global/config/root/input failures recoverable.
+continue_on_other_failures = true
+
+[mail]
+# Optional mail notification feature. Set true to enable failure mail.
+enabled = false
+
+# Recipient passed to the local `mail` command when mail is enabled.
+recipient = "you@example.com"
+
+# When true, also send success mail for both real and dry-run executions.
+# Failure mail is always sent when mail is enabled, regardless of this setting.
+on_success = false
+
+[mqtt]
+# ONE completion-report enable. Each run sends one standalone JSON object to
+# mqtt_json_topic: status=success/failure, boolean success and integer exit_code.
+# It does not require any second enabled switch. Failures are always reported
+# when this is true; successful reports also require SendMQTTOnSuccess=true.
+MQTT_JSON_Status = false
+SendMQTTOnSuccess = true
+# Keep this existing project topic and match the supplied completion automation.
+mqtt_json_topic = "homeassistant/SnapBeforeWatchTower/example-host/status"
+
+# ONE connection/authentication block, shared by completion AND live preview.
+# Either channel can run while the other is disabled. Replace placeholders.
+broker_address = "mqtt.example.local"
+# Integer 1-65535. Omit for 1883, or 8883 when MQTTTLS=true.
+broker_port = 1883
+mqtt_username = "YOUR_MQTT_USERNAME"
+# Plain TOML string; requires a nonempty mqtt_username. Protect private config.
+mqtt_password = "YOUR_MQTT_PASSWORD"
+# Verified TLS for BOTH channels; change port to 8883 for your TLS broker.
+MQTTTLS = false
+# Empty CA uses system trust. Client certificate/key must be supplied together.
+# Relative paths use this configuration file's directory; no ~ expansion.
+ca_file = ""
+cert_file = ""
+key_file = ""
+# Completion QoS 0, 1 or 2; completion reports are always non-retained.
+# Live state/events use QoS 1; discovery/last_result are retained.
+qos = 0
+# Completion worker deadline, integer 1-120 seconds. Live workers: five seconds.
+timeout = 15
+
+# Independent live enable, compatible with homeassistant/live-preview-card.yaml.
+# Uses exactly the broker/auth/TLS values above, NOT a separate connection config.
+# Live-only works with MQTT_JSON_Status=false; completion-only works with this false.
+# Dry-run previews are marked; completion automation ignores dry-runs before real
+# sequence/notification actions. Live state/events use separate job-live/... topics.
+LiveMQTTEnabled = false
+LiveMQTTDiscovery = true
+# [report].name takes precedence for the friendly name/title. job is always the
+# project ID SnapBeforeWatchTower; this job snapshots/retains source datasets.
+LiveBackupName = "SnapBeforeWatchTower"
+# Match this exactly at the top of the Markdown card to auto-discover all jobs.
+LiveManufacturer = "SnapBeforeWatchTower"
+# Finite interval >=1 second; sensors expire after about three intervals.
+LiveHeartbeatSeconds = 60
+# Lifecycle event switches affect only live events, not sensors/completion JSON.
+LiveNotifyStart = false
+LiveNotifySuccess = true
+LiveNotifyFailure = true
+# Empty uses stable host/job/config-path hash; pinned IDs must be unique and use
+# only lowercase letters, digits and underscores.
+LiveDeviceID = ""
+
+[logging]
+# Optional prefix shared by .log/.err/.digest names and email attachment lookup.
+# Empty/omitted uses the actual source/executable basename without its final extension.
+# A custom value must start with an ASCII letter/digit and contain only letters,
+# digits, dots, underscores, or hyphens. Snapshot names are unaffected.
+prefix = ""
+
+[report]
+# Optional single-line report title fallback. [report].name then LiveBackupName
+# take precedence for completion name/title; empty uses the project name.
+# Also the fallback email body heading when name is empty. Does not change mail subjects.
+title = ""
+
+# Optional friendly run name: email body heading and MQTT JSON name/title fields.
+# Completion name/title both use this friendly name; job stays SnapBeforeWatchTower.
+# This is separate from the mail subject. Surrounding whitespace
+# is stripped; multiline values and NUL are rejected. Empty/omitted retains
+# the existing title/basename fallback for mail and LiveBackupName for MQTT.
+name = "Nightly Docker snapshots"
+
+# Optional text directly below the run name in the email body, before outcome/logs.
+# Also sent as the MQTT JSON comment field. Never added to the email subject.
+# Basic TOML strings decode \n as a newline; literal single-quoted strings do not.
+# Multiline basic/literal TOML strings are also supported. Whitespace/newlines
+# are preserved; NUL is rejected. Example: comment = "Before Watchtower updates."
+comment = ""

@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 SPEC = importlib.util.spec_from_file_location('snap_app', ROOT / 'SnapBeforeWatchTower.py')
 app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(app)
-import mqtt_report as mqtt
+from modules import mqtt_report as mqtt
 
 
 @contextmanager
@@ -76,20 +76,20 @@ class BehaviorTests(unittest.TestCase):
                 app.parse_older_than(value)
 
     def test_shipped_example_covers_every_supported_setting_and_safe_defaults(self):
-        with (ROOT / 'config-example.toml').open('rb') as handle:
+        with (ROOT / 'configs/config-example.toml').open('rb') as handle:
             document = tomllib.load(handle)
         expected = {
             'application': {'command', 'dataset_file', 'older_than', 'retain_count', 'dry_run',
                             'continue_on_missing_dataset', 'continue_on_other_failures'},
             'mail': {'enabled', 'recipient', 'on_success'},
-            'mqtt': mqtt.SUPPORTED_KEYS | {'enabled'},
+            'mqtt': mqtt.SUPPORTED_KEYS,
             'logging': {'prefix'},
             'report': {'title', 'name', 'comment'},
         }
         self.assertEqual(set(document), set(expected))
         for section, keys in expected.items():
             self.assertEqual(set(document[section]), keys, section)
-        args, mqtt_config = app.load_app_config(ROOT / 'config-example.toml')
+        args, mqtt_config = app.load_app_config(ROOT / 'configs/config-example.toml')
         self.assertTrue(args.dry_run)
         self.assertIsNone(args.send_mail)
         self.assertIsNone(mqtt_config)
@@ -99,10 +99,10 @@ class BehaviorTests(unittest.TestCase):
             config = write_config(
                 folder,
                 mail='\n[mail]\nenabled = true\nrecipient = "test@example.com"\non_success = true\n',
-                mqtt='\n[mqtt]\nenabled = true\nhost = "broker"\ntopic = "test/status"\nusername = "user"\npassword = "secret"\non_success = true\n',
+                mqtt='\n[mqtt]\nMQTT_JSON_Status = true\nbroker_address = "broker"\nmqtt_json_topic = "test/status"\nmqtt_username = "user"\nmqtt_password = "secret"\nSendMQTTOnSuccess = true\n',
                 dry_run=True,
             )
-            with patch('mqtt_report.importlib.import_module'):
+            with patch('modules.mqtt_report.importlib.import_module'):
                 args, mqtt_config = app.load_app_config(config)
         self.assertEqual(args.command, 'create')
         self.assertEqual(args.file, str((Path(folder) / 'datasets.txt').resolve()))
@@ -151,7 +151,7 @@ class BehaviorTests(unittest.TestCase):
             '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run="true"\n',
             '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\nfile="old-flag"\n',
             '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\n\n[mail]\nenabled=true\nrecipient=""\non_success=false\n',
-            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\n\n[mqtt]\nenabled=false\npassword_env="OLD"\n',
+            '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\n\n[mqtt]\nMQTT_JSON_Status=false\npassword_env="OLD"\n',
             '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\ncontinue_on_missing_dataset="true"\n',
             '[application]\ncommand="create"\ndataset_file="datasets"\nolder_than="7d"\nretain_count=10\ndry_run=true\ncontinue_on_other_failures=1\n',
             '[unknown]\nvalue=1\n',
@@ -162,6 +162,36 @@ class BehaviorTests(unittest.TestCase):
                 path.write_text(text, encoding='utf-8')
                 with self.subTest(text=text), self.assertRaises(ValueError):
                     app.load_app_config(path)
+
+    def test_invalid_command_types_fail_before_operations_or_notifications(self):
+        with temporary_directory() as folder:
+            for value in ['[]', '{}', 'true', '42']:
+                config = write_config(folder)
+                config.write_text(config.read_text().replace('command = "create"', 'command = ' + value))
+                with self.subTest(value=value), \
+                     patch.object(sys, 'argv', ['app', '-c', str(config)]), \
+                     patch.object(app, 'run') as run, patch.object(app, 'RunReporter') as reporter:
+                    with self.assertRaises(SystemExit) as failure:
+                        app.main()
+                    self.assertEqual(failure.exception.code, 2)
+                    run.assert_not_called()
+                    reporter.assert_not_called()
+
+    def test_out_of_range_retention_fails_before_operations_or_notifications(self):
+        self.assertEqual(app.parse_older_than('365d'), dt.timedelta(days=365))
+        with temporary_directory() as folder:
+            for value in ['1000000d', '999999999d', '1000000000d', '999999999w', '999999999m', '9' * 5000 + 'd']:
+                with self.subTest(value=value[:30]):
+                    with self.assertRaisesRegex(argparse.ArgumentTypeError, 'supported range'):
+                        app.parse_older_than(value)
+                    config = write_config(folder, older_than=value)
+                    with patch.object(sys, 'argv', ['app', '-c', str(config)]), \
+                         patch.object(app, 'run') as run, patch.object(app, 'RunReporter') as reporter:
+                        with self.assertRaises(SystemExit) as failure:
+                            app.main()
+                        self.assertEqual(failure.exception.code, 2)
+                        run.assert_not_called()
+                        reporter.assert_not_called()
 
     def test_retention_preserves_newest_and_ignores_unmanaged_or_invalid_dates(self):
         names = [
@@ -498,7 +528,7 @@ class BehaviorTests(unittest.TestCase):
                 folder,
                 dry_run=True,
                 mail='\n[mail]\nenabled = true\nrecipient = "test@example.com"\non_success = true\n',
-                mqtt='\n[mqtt]\nenabled = true\nhost = "broker"\ntopic = "test/status"\ntitle = "test"\non_success = true\n',
+                mqtt='\n[mqtt]\nMQTT_JSON_Status = true\nbroker_address = "broker"\nmqtt_json_topic = "test/status"\nLiveBackupName = "test"\nSendMQTTOnSuccess = true\n',
             )
             mail = Mock(return_value=True)
             err_path = str(Path(folder) / 'run.err')
@@ -630,7 +660,7 @@ class BehaviorTests(unittest.TestCase):
                     config = write_config(
                         folder, logging_settings='\n[logging]\nprefix="Custom.Prefix"\n',
                         report='\n[report]\ntitle="Shared title"\ncomment=' + encoded + '\n',
-                        mqtt='\n[mqtt]\nenabled=true\nhost="broker"\ntopic="test/status"\ntitle="Legacy title"\n',
+                        mqtt='\n[mqtt]\nMQTT_JSON_Status=true\nbroker_address="broker"\nmqtt_json_topic="test/status"\nLiveBackupName="Legacy title"\n',
                     )
                     with patch.object(mqtt.importlib, 'import_module'):
                         args, config_values = app.load_app_config(config)
@@ -639,10 +669,10 @@ class BehaviorTests(unittest.TestCase):
                     self.assertEqual(args.report_comment, expected)
                     self.assertEqual(config_values['title'], 'Shared title')
             config = write_config(folder, report='\n[report]\ntitle=""\n',
-                                  mqtt='\n[mqtt]\nenabled=true\nhost="broker"\ntopic="test/status"\ntitle="Legacy title"\n')
+                                  mqtt='\n[mqtt]\nMQTT_JSON_Status=true\nbroker_address="broker"\nmqtt_json_topic="test/status"\nLiveBackupName="Legacy title"\n')
             with patch.object(mqtt.importlib, 'import_module'):
                 _, config_values = app.load_app_config(config)
-            self.assertEqual(config_values['title'], 'Legacy title')
+            self.assertEqual(config_values['LiveBackupName'], 'Legacy title')
 
     def test_invalid_log_report_values_fail_before_operations(self):
         bad = [
@@ -748,7 +778,7 @@ class BehaviorTests(unittest.TestCase):
                 logging_settings='\n[logging]\nprefix="Custom"\n',
                 report='\n[report]\ntitle="Shared title"\nname="Nightly backup"\ncomment="First\\nSecond"\n',
                 mail='\n[mail]\nenabled=true\nrecipient="test@example.com"\non_success=true\n',
-                mqtt='\n[mqtt]\nenabled=true\nhost="broker"\ntopic="test/status"\non_success=true\n',
+                mqtt='\n[mqtt]\nMQTT_JSON_Status=true\nbroker_address="broker"\nmqtt_json_topic="test/status"\nSendMQTTOnSuccess=true\n',
             )
             for scenario in ['success', 'dataset-failure', 'missing-dataset', 'fatal', 'nonroot']:
                 with self.subTest(scenario=scenario), \
@@ -781,9 +811,9 @@ class BehaviorTests(unittest.TestCase):
                         self.assertEqual(mail.call_args.kwargs[key], expected)
                     publish.assert_called_once()
                     payload = publish.call_args.args[1]
-                    self.assertEqual(payload['title'], 'Shared title')
+                    self.assertEqual(payload['title'], 'Nightly backup')
                     self.assertEqual(payload['name'], 'Nightly backup')
-                    self.assertEqual(payload['job'], 'Nightly backup')
+                    self.assertEqual(payload['job'], 'SnapBeforeWatchTower')
                     self.assertEqual(payload['comment'], 'First\nSecond')
                     self.assertEqual(payload['status'], 'success' if scenario == 'success' else 'failure')
                     if scenario != 'nonroot':
@@ -843,7 +873,7 @@ class CLITests(unittest.TestCase):
     def test_version_exits_without_config(self):
         result = self.run_cli('--version')
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
-        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.16')
+        self.assertEqual(result.stdout.strip(), 'SnapBeforeWatchTower.py 0.0.20')
         self.assertEqual(result.stderr, '')
 
     def test_config_is_required_and_retired_operational_flags_are_rejected(self):
